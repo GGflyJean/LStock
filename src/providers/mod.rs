@@ -66,13 +66,7 @@ impl HttpClient {
             .timeout(Duration::from_secs(config.timeout_secs.max(1)))
             .user_agent(config.user_agent.clone())
             .default_headers(headers);
-        let proxy = config.proxy.clone().or_else(|| {
-            std::env::var("HTTPS_PROXY")
-                .ok()
-                .or_else(|| std::env::var("https_proxy").ok())
-                .or_else(|| std::env::var("HTTP_PROXY").ok())
-                .or_else(|| std::env::var("http_proxy").ok())
-        });
+        let proxy = resolve_proxy(config.proxy.clone());
         if let Some(proxy) = proxy {
             tracing::info!("行情请求已启用代理");
             builder = builder.proxy(
@@ -362,6 +356,36 @@ impl Providers {
     }
 }
 
+fn non_empty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_proxy(config_proxy: Option<String>) -> Option<String> {
+    non_empty(config_proxy).or_else(|| {
+        ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+            .iter()
+            .find_map(|key| non_empty(std::env::var(key).ok()))
+    })
+}
+
 pub fn source_meta(source: &str, delay: DelayKind) -> (String, DelayKind) {
     (source.to_string(), delay)
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+
+    #[test]
+    fn blank_proxy_values_are_ignored() {
+        assert_eq!(non_empty(None), None);
+        assert_eq!(non_empty(Some(String::new())), None);
+        assert_eq!(non_empty(Some("   ".to_string())), None);
+        assert_eq!(
+            non_empty(Some(" http://proxy:3128 ".to_string())),
+            Some("http://proxy:3128".to_string())
+        );
+    }
 }
