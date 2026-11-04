@@ -15,6 +15,7 @@ fn provider_config(server: &MockServer) -> ProviderConfig {
         eastmoney_base: server.uri(),
         eastmoney_datacenter_base: server.uri(),
         eastmoney_push2ex_base: server.uri(),
+        eastmoney_news_base: server.uri(),
         eastmoney_fallback_bases: Vec::new(),
         yahoo_base: server.uri(),
         stooq_base: server.uri(),
@@ -170,6 +171,7 @@ async fn eastmoney_parses_sentiment_via_http() {
         server.uri(),
         server.uri(),
         server.uri(),
+        server.uri(),
         Vec::new(),
         None,
     );
@@ -284,6 +286,7 @@ async fn eastmoney_fundamentals_parse_finance_dividend_and_valuation() {
     let config = provider_config(&server);
     let provider = EastmoneyProvider::new(
         HttpClient::new(&config).unwrap(),
+        server.uri(),
         server.uri(),
         server.uri(),
         server.uri(),
@@ -404,6 +407,7 @@ async fn eastmoney_push2_uses_fallback_hosts() {
         primary.uri(),
         primary.uri(),
         fallback.uri(),
+        fallback.uri(),
         vec![fallback.uri()],
         None,
     );
@@ -447,6 +451,7 @@ async fn eastmoney_uses_tencent_valuation_when_push2_fails() {
     let tencent = TencentProvider::new(http.clone(), server.uri());
     let provider = EastmoneyProvider::new(
         http,
+        server.uri(),
         server.uri(),
         server.uri(),
         server.uri(),

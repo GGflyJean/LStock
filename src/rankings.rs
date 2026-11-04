@@ -439,6 +439,7 @@ mod tests {
     fn fundamentals(symbol: &str, roe: f64, yield_value: f64) -> Fundamentals {
         Fundamentals {
             version: crate::models::FUNDAMENTALS_VERSION,
+            data_complete: true,
             symbol: symbol.to_string(),
             market: Market::Cn,
             revenue_growth: Some(10.0),

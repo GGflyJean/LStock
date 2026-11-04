@@ -4,8 +4,9 @@ use axum::body::Body;
 use axum::http::{header, StatusCode};
 use chrono::Utc;
 use l_stock::models::{
-    Board, DelayKind, IndexPayload, InsufficientItem, Market, Quote, RefreshStatus, ScopeKey,
-    SentimentMetric, SentimentReport, Tab, WatchPayload,
+    Board, DelayKind, IndexPayload, InsufficientItem, MacroItem, MacroPayload, Market, MoverItem,
+    MoversPayload, NewsItem, NewsPayload, Quote, RefreshStatus, ScopeKey, SectorItem,
+    SectorPayload, SentimentMetric, SentimentReport, Tab, WatchPayload,
 };
 use tower::ServiceExt;
 
@@ -197,7 +198,8 @@ async fn unsupported_tab_shows_placeholder() {
         .await
         .unwrap();
     let body = support::body_text(response).await;
-    assert!(body.contains("暂未开放"));
+    assert!(body.contains("暂无新闻快照"));
+    assert!(!body.contains("暂未开放"));
 }
 
 #[tokio::test]
@@ -513,4 +515,85 @@ async fn ranking_insufficient_list_is_rendered() {
     assert!(body.contains("数据不足"));
     assert!(body.contains("招商银行"));
     assert!(body.contains("ROIC"));
+}
+
+#[tokio::test]
+async fn new_tabs_render_snapshots() {
+    let h = support::app(&[]);
+    let now = Utc::now();
+    let sectors = SectorPayload {
+        sectors: vec![SectorItem {
+            code: "BK1326".to_string(),
+            name: "半导体设备".to_string(),
+            change_pct: 2.5,
+            leading: "托伦斯".to_string(),
+            source: "测试".to_string(),
+        }],
+        source_note: "来源：测试".to_string(),
+        as_of_utc: now,
+    };
+    let movers = MoversPayload {
+        gainers: vec![MoverItem {
+            symbol: "sh600519".to_string(),
+            name: "贵州茅台".to_string(),
+            price: 1500.0,
+            change_pct: 3.2,
+            amount: 1_0000_0000.0,
+        }],
+        losers: vec![MoverItem {
+            symbol: "sh600036".to_string(),
+            name: "招商银行".to_string(),
+            price: 40.0,
+            change_pct: -2.1,
+            amount: 2_0000_0000.0,
+        }],
+        source_note: "来源：测试".to_string(),
+        as_of_utc: now,
+    };
+    let news = NewsPayload {
+        items: vec![NewsItem {
+            title: "测试快讯".to_string(),
+            summary: "摘要".to_string(),
+            time: "2026-11-04 21:00:00".to_string(),
+            url: "https://example.com".to_string(),
+        }],
+        source_note: "来源：测试".to_string(),
+        as_of_utc: now,
+    };
+    let macro_data = MacroPayload {
+        items: vec![MacroItem {
+            label: "CPI 同比".to_string(),
+            value: "+0.90%".to_string(),
+            note: "2026年09月份".to_string(),
+        }],
+        source_note: "来源：测试".to_string(),
+        as_of_utc: now,
+    };
+    for (scope, payload) in [
+        ("sectors", serde_json::to_string(&sectors).unwrap()),
+        ("movers", serde_json::to_string(&movers).unwrap()),
+        ("news", serde_json::to_string(&news).unwrap()),
+        ("macro", serde_json::to_string(&macro_data).unwrap()),
+    ] {
+        h.state
+            .db
+            .insert_snapshot(Market::Cn, scope, now, &payload)
+            .unwrap();
+    }
+    let checks = [
+        ("sectors", "半导体设备"),
+        ("movers", "涨幅榜"),
+        ("news", "测试快讯"),
+        ("macro", "CPI 同比"),
+    ];
+    for (tab, expected) in checks {
+        let response = h
+            .router()
+            .oneshot(h.request("GET", &format!("/?view=cn&tab={tab}")))
+            .await
+            .unwrap();
+        let body = support::body_text(response).await;
+        assert!(body.contains(expected), "tab={tab} missing {expected}");
+        assert!(!body.contains("暂未开放"), "tab={tab} still pending");
+    }
 }

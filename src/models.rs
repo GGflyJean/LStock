@@ -114,10 +114,7 @@ impl Tab {
     }
 
     pub fn supported(self) -> bool {
-        matches!(
-            self,
-            Tab::Watch | Tab::Index | Tab::Sentiment | Tab::Ranking
-        )
+        true
     }
 }
 
@@ -431,6 +428,8 @@ pub struct RankingPayload {
 pub struct Fundamentals {
     #[serde(default)]
     pub version: u32,
+    #[serde(default)]
+    pub data_complete: bool,
     pub symbol: String,
     pub market: Market,
     #[serde(default)]
@@ -506,6 +505,114 @@ impl Fundamentals {
         }
         missing
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectorItem {
+    pub code: String,
+    pub name: String,
+    pub change_pct: f64,
+    pub leading: String,
+    pub source: String,
+}
+
+impl SectorItem {
+    pub fn pct_text(&self) -> String {
+        format!("{:+.2}%", self.change_pct)
+    }
+
+    pub fn change_class(&self) -> &'static str {
+        if self.change_pct > 0.0 {
+            "up"
+        } else if self.change_pct < 0.0 {
+            "down"
+        } else {
+            "flat"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SectorPayload {
+    pub sectors: Vec<SectorItem>,
+    pub source_note: String,
+    pub as_of_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoverItem {
+    pub symbol: String,
+    pub name: String,
+    pub price: f64,
+    pub change_pct: f64,
+    pub amount: f64,
+}
+
+impl MoverItem {
+    pub fn price_text(&self) -> String {
+        format!("{:.2}", self.price)
+    }
+
+    pub fn pct_text(&self) -> String {
+        format!("{:+.2}%", self.change_pct)
+    }
+
+    pub fn change_class(&self) -> &'static str {
+        if self.change_pct > 0.0 {
+            "up"
+        } else if self.change_pct < 0.0 {
+            "down"
+        } else {
+            "flat"
+        }
+    }
+
+    pub fn amount_text(&self) -> String {
+        if self.amount >= 1_0000_0000.0 {
+            format!("{:.2} 亿", self.amount / 1_0000_0000.0)
+        } else if self.amount > 0.0 {
+            format!("{:.0}", self.amount)
+        } else {
+            "-".to_string()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MoversPayload {
+    pub gainers: Vec<MoverItem>,
+    pub losers: Vec<MoverItem>,
+    pub source_note: String,
+    pub as_of_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewsItem {
+    pub title: String,
+    pub summary: String,
+    pub time: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewsPayload {
+    pub items: Vec<NewsItem>,
+    pub source_note: String,
+    pub as_of_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroItem {
+    pub label: String,
+    pub value: String,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroPayload {
+    pub items: Vec<MacroItem>,
+    pub source_note: String,
+    pub as_of_utc: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -613,7 +720,7 @@ pub struct UsSentimentRaw {
     pub as_of_utc: DateTime<Utc>,
 }
 
-pub const FUNDAMENTALS_VERSION: u32 = 1;
+pub const FUNDAMENTALS_VERSION: u32 = 2;
 
 pub fn normalize_symbol(market: Market, raw: &str) -> Result<String, String> {
     let raw = raw.trim();

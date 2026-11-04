@@ -5,13 +5,15 @@
 ## 功能范围
 
 - 三种市场视图：**A股 / 美股 / 双屏**；双屏左右分栏，内容 tab 同步切换，窄屏自动上下堆叠。
-- 内容 tab：自选、指数、情绪、策略榜单、板块、涨跌榜、新闻、宏观。
-  - P0 已接入数据：**自选、指数、情绪、策略榜单**。
-  - 其余 tab 显示“暂未开放 / 数据准备中”，不会出现空白页。
+- 内容 tab：自选、指数、情绪、策略榜单、板块、涨跌榜、新闻、宏观，全部已接入数据。
+  - 板块：A股行业板块（东方财富），美股行业 ETF（腾讯）。
+  - 涨跌榜：A股全市场涨幅/跌幅榜（东方财富），美股候选池涨跌排序（腾讯/新浪）。
+  - 新闻：东方财富 7×24 财经快讯。
+  - 宏观：A股 GDP/CPI/PPI/PMI/M2（东方财富/国家统计局）；美股 VIX 与主要指数（腾讯），10Y/DXY 在当前网络不可用时明确标注。
 - 大盘情绪：A股涨跌家数、涨跌停、炸板率、连板高度、成交额、涨跌中位数、新高新低、主力资金；美股 VIX、涨跌家数、新高新低、PCR、10Y、美元指数；输出 0-100 情绪温度与分档。
 - 三类策略榜单：短期投资、长期投资、股息投资价值，展示综合分与因子贡献，缺失数据单独列出。
 - 快照模型：页面读取最近一次成功快照，不做秒级推送；左下角显示数据时效与 UTC 时间，右下角显示 UTC 时钟、手动刷新与下次刷新时间。
-- 启动时在后台自动触发一次全局数据刷新（两个市场的自选、指数、情绪、三类榜单），不阻塞服务启动。
+- 启动时在后台自动触发一次全局数据刷新（两个市场的自选、指数、情绪、板块、涨跌榜、新闻、宏观、三类榜单），不阻塞服务启动。
 - 刷新任务并发执行，受 `MAX_CONCURRENCY` 限制；同一 scope 仍保持单飞、冷却与排队。
 - 全站鉴权：单用户 Argon2 密码、会话 Cookie、CSRF、登录失败限流；支持 HTTPS 反向代理下 Secure Cookie。
 
@@ -41,6 +43,7 @@
 | `EASTMONEY_DATACENTER_BASE_URL` | 否 | `https://datacenter-web.eastmoney.com` | 东财 F10 财务/分红数据 |
 | `EASTMONEY_PUSH2EX_BASE_URL` | 否 | `https://push2ex.eastmoney.com` | 东财涨停/跌停/炸板池 |
 | `EASTMONEY_FALLBACK_BASE_URLS` | 否 | `https://push2delay.eastmoney.com,https://push2his.eastmoney.com` | 东财 push2 备用域名（主域名不可达时自动切换） |
+| `EASTMONEY_NEWS_BASE_URL` | 否 | `https://np-weblist.eastmoney.com` | 东财 7×24 快讯 |
 | `YAHOO_BASE_URL` | 否 | `https://query1.finance.yahoo.com` | Yahoo 行情 / 指数 / 基本面 |
 | `STOOQ_BASE_URL` | 否 | `https://stooq.com` | Stooq 美股指数备源 |
 
@@ -89,6 +92,11 @@ DATA_DIR=./data AUTH_USER=trader AUTH_PASSWORD_HASH='<hash>' \
 | 美股 | 情绪 | 腾讯 VIX → Yahoo（VIX / 10Y / DXY） | 延迟；缺失指标明确标注 |
 | A股 | 基本面 / 分红 | 东方财富 F10 | 报告期数据 |
 | 美股 | 基本面 | Yahoo quoteSummary | 日频 |
+| A股 | 板块 / 涨跌榜 | 东方财富（push2 + push2delay/push2his 备用） | 实时 |
+| 美股 | 板块 / 涨跌榜 | 腾讯 → 新浪 | 延迟 |
+| 两市 | 新闻 | 东方财富 7×24 快讯 | 实时 |
+| A股 | 宏观 | 东方财富 / 国家统计局（GDP/CPI/PPI/PMI/M2） | 月/季度 |
+| 美股 | 宏观 | 腾讯 VIX + 主要指数；10Y/DXY 不可用时标注 | 延迟 |
 
 所有请求统一设置超时、有限重试、UA 与可选代理；主源失败会自动降级并在页面标注实际来源。Yahoo 在部分网络会返回 403/429、Stooq 可能返回 404，因此美股报价与指数优先使用腾讯/新浪，Yahoo/Stooq 仅作为兜底。A股基本面与分红使用东方财富 F10；东财 push2 主域名不可达时会自动切换 `push2delay` / `push2his`，并可用腾讯行情补齐 PE/股本/价格。美股基本面仍依赖 Yahoo，若 Yahoo 不可达，美股长期/股息榜单会显示“缺少基本面”。替换数据源只需改 `*_BASE_URL` 或在 `src/providers/` 增加实现，页面与榜单不感知具体来源。
 

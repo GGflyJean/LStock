@@ -21,8 +21,10 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::market::session_state;
 use crate::models::{
-    normalize_symbol, Board, IndexPayload, InsufficientItem, Market, RankingItem, RankingPayload,
-    RefreshRun, ScopeKey, SentimentMetric, SentimentReport, Tab, WatchItem, WatchPayload,
+    normalize_symbol, Board, IndexPayload, InsufficientItem, MacroItem, MacroPayload, Market,
+    MoverItem, MoversPayload, NewsItem, NewsPayload, RankingItem, RankingPayload, RefreshRun,
+    ScopeKey, SectorItem, SectorPayload, SentimentMetric, SentimentReport, Tab, WatchItem,
+    WatchPayload,
 };
 use crate::rankings;
 use crate::service::{scopes_for, RefreshService};
@@ -105,6 +107,10 @@ struct PaneView {
     show_index: bool,
     show_sentiment: bool,
     show_ranking: bool,
+    show_sectors: bool,
+    show_movers: bool,
+    show_news: bool,
+    show_macro: bool,
     show_placeholder: bool,
     quotes: Vec<crate::models::Quote>,
     indices: Vec<crate::models::Quote>,
@@ -119,6 +125,11 @@ struct PaneView {
     ranking_pool_size: usize,
     ranking_weights: String,
     board_label: String,
+    sectors: Vec<SectorItem>,
+    movers_gainers: Vec<MoverItem>,
+    movers_losers: Vec<MoverItem>,
+    news: Vec<NewsItem>,
+    macro_items: Vec<MacroItem>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,6 +346,10 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
         show_index: tab == Tab::Index,
         show_sentiment: tab == Tab::Sentiment,
         show_ranking: tab == Tab::Ranking,
+        show_sectors: tab == Tab::Sectors,
+        show_movers: tab == Tab::Movers,
+        show_news: tab == Tab::News,
+        show_macro: tab == Tab::Macro,
         show_placeholder: !tab.supported(),
         quotes: Vec::new(),
         indices: Vec::new(),
@@ -349,6 +364,11 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
         ranking_pool_size: 0,
         ranking_weights: String::new(),
         board_label: board.label().to_string(),
+        sectors: Vec::new(),
+        movers_gainers: Vec::new(),
+        movers_losers: Vec::new(),
+        news: Vec::new(),
+        macro_items: Vec::new(),
     };
 
     if !tab.supported() {
@@ -421,7 +441,58 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
                 pane.placeholder = format!("暂无{}快照，点击手动刷新抓取。", board.label());
             }
         }
-        Tab::Sectors | Tab::Movers | Tab::News | Tab::Macro => {}
+        Tab::Sectors => {
+            if let Ok(Some((snapshot, payload))) = state
+                .service
+                .latest_snapshot::<SectorPayload>(market, "sectors")
+            {
+                pane.sectors = payload.sectors;
+                pane.source_note = payload.source_note;
+                as_of = Some(snapshot.as_of_utc);
+            }
+            if pane.sectors.is_empty() {
+                pane.placeholder = "暂无板块快照，点击手动刷新抓取。".to_string();
+            }
+        }
+        Tab::Movers => {
+            if let Ok(Some((snapshot, payload))) = state
+                .service
+                .latest_snapshot::<MoversPayload>(market, "movers")
+            {
+                pane.movers_gainers = payload.gainers;
+                pane.movers_losers = payload.losers;
+                pane.source_note = payload.source_note;
+                as_of = Some(snapshot.as_of_utc);
+            }
+            if pane.movers_gainers.is_empty() && pane.movers_losers.is_empty() {
+                pane.placeholder = "暂无涨跌榜快照，点击手动刷新抓取。".to_string();
+            }
+        }
+        Tab::News => {
+            if let Ok(Some((snapshot, payload))) =
+                state.service.latest_snapshot::<NewsPayload>(market, "news")
+            {
+                pane.news = payload.items;
+                pane.source_note = payload.source_note;
+                as_of = Some(snapshot.as_of_utc);
+            }
+            if pane.news.is_empty() {
+                pane.placeholder = "暂无新闻快照，点击手动刷新抓取。".to_string();
+            }
+        }
+        Tab::Macro => {
+            if let Ok(Some((snapshot, payload))) = state
+                .service
+                .latest_snapshot::<MacroPayload>(market, "macro")
+            {
+                pane.macro_items = payload.items;
+                pane.source_note = payload.source_note;
+                as_of = Some(snapshot.as_of_utc);
+            }
+            if pane.macro_items.is_empty() {
+                pane.placeholder = "暂无宏观快照，点击手动刷新抓取。".to_string();
+            }
+        }
     }
 
     if let Some(as_of) = as_of {

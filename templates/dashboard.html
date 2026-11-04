@@ -152,6 +152,80 @@
         </ul>
       </details>
       {% endif %}
+    {% else if pane.show_sectors %}
+      {% if !pane.sectors.is_empty() %}
+      <table class="sectors">
+        <thead><tr><th>板块</th><th>涨跌幅</th><th>领涨</th></tr></thead>
+        <tbody>
+        {% for item in pane.sectors %}
+        <tr>
+          <td>{{ item.name }}<span class="name">{{ item.code }}</span></td>
+          <td class="{{ item.change_class() }}">{{ item.pct_text() }}</td>
+          <td>{{ item.leading }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+    {% else if pane.show_movers %}
+      {% if !pane.movers_gainers.is_empty() || !pane.movers_losers.is_empty() %}
+      <div class="movers">
+        <div>
+          <h3>涨幅榜</h3>
+          <table>
+            <thead><tr><th>标的</th><th>价格</th><th>涨跌幅</th></tr></thead>
+            <tbody>
+            {% for item in pane.movers_gainers %}
+            <tr><td>{{ item.name }}<span class="name">{{ item.symbol }}</span></td><td>{{ item.price_text() }}</td><td class="{{ item.change_class() }}">{{ item.pct_text() }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <h3>跌幅榜</h3>
+          <table>
+            <thead><tr><th>标的</th><th>价格</th><th>涨跌幅</th></tr></thead>
+            <tbody>
+            {% for item in pane.movers_losers %}
+            <tr><td>{{ item.name }}<span class="name">{{ item.symbol }}</span></td><td>{{ item.price_text() }}</td><td class="{{ item.change_class() }}">{{ item.pct_text() }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+    {% else if pane.show_news %}
+      {% if !pane.news.is_empty() %}
+      <ul class="news">
+        {% for item in pane.news %}
+        <li>
+          <div class="news-time">{{ item.time }}</div>
+          <div class="news-title">{% if !item.url.is_empty() %}<a href="{{ item.url }}" target="_blank" rel="noopener">{{ item.title }}</a>{% else %}{{ item.title }}{% endif %}</div>
+          {% if !item.summary.is_empty() %}<div class="news-summary">{{ item.summary }}</div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+    {% else if pane.show_macro %}
+      {% if !pane.macro_items.is_empty() %}
+      <div class="metrics">
+        {% for item in pane.macro_items %}
+        <div class="metric">
+          <div class="metric-label">{{ item.label }}</div>
+          <div class="metric-value">{{ item.value }}</div>
+          {% if !item.note.is_empty() %}<div class="metric-note">{{ item.note }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
     {% endif %}
   </section>
   {% endfor %}

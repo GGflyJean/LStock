@@ -238,12 +238,12 @@ async fn holiday_schedule_records_skipped_without_requests() {
     let (service, _dir) = build(&server, 0);
     let sunday = Utc.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap();
     let outcomes = service.run_scheduled_market_at(Market::Cn, sunday).await;
-    assert_eq!(outcomes.len(), 6);
+    assert_eq!(outcomes.len(), 10);
     assert!(outcomes.iter().all(
         |outcome| matches!(outcome, RefreshOutcome::Failed { error, .. } if error.contains("休市"))
     ));
     let runs = service.db.recent_refresh_runs(10).unwrap();
-    assert_eq!(runs.len(), 6);
+    assert_eq!(runs.len(), 10);
     assert!(runs.iter().all(|run| run.status == "skipped"));
 }
 
@@ -393,8 +393,10 @@ async fn request_many_runs_scopes_concurrently() {
 }
 
 #[tokio::test]
-async fn unsupported_tab_refresh_is_empty_scope() {
-    assert!(scopes_for(Market::Cn, Tab::Macro, None).is_empty());
+async fn all_tabs_have_refresh_scopes() {
+    for tab in Tab::ALL {
+        assert_eq!(scopes_for(Market::Cn, tab, None).len(), 1);
+    }
 }
 
 #[tokio::test]

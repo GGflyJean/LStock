@@ -6,7 +6,10 @@ use chrono::{Duration, Utc};
 use serde_json::Value;
 
 use crate::market::is_trading_day;
-use crate::models::{CnSentimentRaw, Fundamentals, Market};
+use crate::models::{
+    CnSentimentRaw, Fundamentals, MacroItem, MacroPayload, Market, MoverItem, MoversPayload,
+    NewsItem, NewsPayload, SectorItem, SectorPayload,
+};
 
 use super::{tencent::TencentProvider, CnSentimentProvider, FundamentalProvider, HttpClient};
 
@@ -16,6 +19,7 @@ pub struct EastmoneyProvider {
     bases: Vec<String>,
     datacenter_base: String,
     push2ex_base: String,
+    news_base: String,
     tencent: Option<TencentProvider>,
 }
 
@@ -25,6 +29,7 @@ impl EastmoneyProvider {
         base: String,
         datacenter_base: String,
         push2ex_base: String,
+        news_base: String,
         fallbacks: Vec<String>,
         tencent: Option<TencentProvider>,
     ) -> Self {
@@ -39,6 +44,7 @@ impl EastmoneyProvider {
             bases,
             datacenter_base,
             push2ex_base,
+            news_base,
             tencent,
         }
     }
@@ -60,6 +66,238 @@ impl EastmoneyProvider {
             }
         }
         Err(last_error.unwrap_or_else(|| anyhow::anyhow!("没有可用的东财 push2 地址")))
+    }
+}
+
+impl EastmoneyProvider {
+    async fn report(&self, name: &str) -> Result<Value> {
+        let url = format!(
+            "{}/api/data/v1/get?reportName={name}&columns=ALL&pageNumber=1&pageSize=1&sortColumns=REPORT_DATE&sortTypes=-1",
+            self.datacenter_base.trim_end_matches('/')
+        );
+        self.http
+            .get_json(&url, &[("Referer", "https://data.eastmoney.com/")])
+            .await
+            .with_context(|| format!("东方财富宏观数据失败: {name}"))
+    }
+
+    pub async fn sectors(&self) -> Result<SectorPayload> {
+        let json = self
+            .push2_json(
+                "/api/qt/clist/get?pn=1&pz=40&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:2&fields=f12,f14,f3,f128",
+                &[("Referer", "https://quote.eastmoney.com/")],
+            )
+            .await
+            .with_context(|| "东方财富行业板块请求失败")?;
+        parse_sectors(&json)
+    }
+
+    async fn mover_list(&self, order: &str) -> Result<Vec<MoverItem>> {
+        let path = format!(
+            "/api/qt/clist/get?pn=1&pz=15&po={order}&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f6"
+        );
+        let json = self
+            .push2_json(&path, &[("Referer", "https://quote.eastmoney.com/")])
+            .await
+            .with_context(|| "东方财富涨跌榜请求失败")?;
+        parse_movers(&json)
+    }
+
+    pub async fn movers_cn(&self) -> Result<MoversPayload> {
+        let (gainers, losers) = tokio::join!(self.mover_list("1"), self.mover_list("0"));
+        let gainers = gainers?;
+        let losers = losers?;
+        Ok(MoversPayload {
+            gainers,
+            losers,
+            source_note: "来源：东方财富涨跌榜".to_string(),
+            as_of_utc: Utc::now(),
+        })
+    }
+
+    pub async fn news(&self) -> Result<NewsPayload> {
+        let url = format!(
+            "{}/comm/web/getFastNewsList?client=web&biz=web_724&fastColumn=102&sortEnd=&pageSize=30&req_trace=1",
+            self.news_base.trim_end_matches('/')
+        );
+        let json = self
+            .http
+            .get_json(&url, &[("Referer", "https://kuaixun.eastmoney.com/")])
+            .await
+            .with_context(|| "东方财富快讯请求失败")?;
+        parse_news(&json)
+    }
+
+    pub async fn macro_cn(&self) -> Result<MacroPayload> {
+        let (gdp, cpi, ppi, pmi, m2) = tokio::join!(
+            self.report("RPT_ECONOMY_GDP"),
+            self.report("RPT_ECONOMY_CPI"),
+            self.report("RPT_ECONOMY_PPI"),
+            self.report("RPT_ECONOMY_PMI"),
+            self.report("RPT_ECONOMY_CURRENCY_SUPPLY")
+        );
+        let mut items = Vec::new();
+        if let Some(row) = latest_row(&gdp.unwrap_or_default()) {
+            items.push(macro_pct("GDP 同比", row, "SUM_SAME"));
+        }
+        if let Some(row) = latest_row(&cpi.unwrap_or_default()) {
+            items.push(macro_pct("CPI 同比", row, "NATIONAL_SAME"));
+        }
+        if let Some(row) = latest_row(&ppi.unwrap_or_default()) {
+            items.push(macro_pct("PPI 同比", row, "BASE_SAME"));
+        }
+        if let Some(row) = latest_row(&pmi.unwrap_or_default()) {
+            items.push(macro_value("制造业 PMI", row, "MAKE_INDEX"));
+        }
+        if let Some(row) = latest_row(&m2.unwrap_or_default()) {
+            items.push(macro_pct("M2 同比", row, "CURRENCY_SAME"));
+        }
+        if items.is_empty() {
+            return Err(anyhow::anyhow!("东方财富宏观数据全部不可用"));
+        }
+        Ok(MacroPayload {
+            items,
+            source_note: "来源：东方财富 / 国家统计局".to_string(),
+            as_of_utc: Utc::now(),
+        })
+    }
+}
+
+pub fn parse_sectors(json: &Value) -> Result<SectorPayload> {
+    let rows = rows(json)?;
+    let sectors = rows
+        .iter()
+        .filter_map(|row| {
+            let name = row.get("f14")?.as_str()?.to_string();
+            Some(SectorItem {
+                code: row
+                    .get("f12")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name,
+                change_pct: number(row, "f3").unwrap_or(0.0),
+                leading: row
+                    .get("f128")
+                    .and_then(Value::as_str)
+                    .unwrap_or("-")
+                    .to_string(),
+                source: "东方财富行业板块".to_string(),
+            })
+        })
+        .collect::<Vec<_>>();
+    if sectors.is_empty() {
+        return Err(anyhow::anyhow!("行业板块数据为空"));
+    }
+    Ok(SectorPayload {
+        sectors,
+        source_note: "来源：东方财富行业板块".to_string(),
+        as_of_utc: Utc::now(),
+    })
+}
+
+pub fn parse_movers(json: &Value) -> Result<Vec<MoverItem>> {
+    let rows = rows(json)?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let name = row.get("f14")?.as_str()?.to_string();
+            Some(MoverItem {
+                symbol: row
+                    .get("f12")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                name,
+                price: number(row, "f2").unwrap_or(0.0),
+                change_pct: number(row, "f3").unwrap_or(0.0),
+                amount: number(row, "f6").unwrap_or(0.0),
+            })
+        })
+        .collect())
+}
+
+pub fn parse_news(json: &Value) -> Result<NewsPayload> {
+    let items = json
+        .get("data")
+        .and_then(|data| data.get("fastNewsList"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("快讯响应为空"))?
+        .iter()
+        .filter_map(|item| {
+            let title = item.get("title")?.as_str()?.to_string();
+            let code = item.get("code").and_then(Value::as_str).unwrap_or_default();
+            Some(NewsItem {
+                title,
+                summary: item
+                    .get("summary")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                time: item
+                    .get("showTime")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                url: if code.is_empty() {
+                    String::new()
+                } else {
+                    format!("https://finance.eastmoney.com/a/{code}.html")
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return Err(anyhow::anyhow!("快讯数据为空"));
+    }
+    Ok(NewsPayload {
+        items,
+        source_note: "来源：东方财富 7×24 快讯".to_string(),
+        as_of_utc: Utc::now(),
+    })
+}
+
+fn rows(json: &Value) -> Result<&Vec<Value>> {
+    json.get("data")
+        .and_then(|data| data.get("diff"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("响应缺少 data.diff"))
+}
+
+fn latest_row(json: &Value) -> Option<&Value> {
+    json.get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
+}
+
+fn macro_pct(label: &str, row: &Value, key: &str) -> MacroItem {
+    let value = number(row, key);
+    MacroItem {
+        label: label.to_string(),
+        value: value
+            .map(|value| format!("{:+.2}%", value))
+            .unwrap_or_else(|| "数据不足".to_string()),
+        note: row
+            .get("TIME")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+fn macro_value(label: &str, row: &Value, key: &str) -> MacroItem {
+    let value = number(row, key);
+    MacroItem {
+        label: label.to_string(),
+        value: value
+            .map(|value| format!("{:.1}", value))
+            .unwrap_or_else(|| "数据不足".to_string()),
+        note: row
+            .get("TIME")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -397,6 +635,7 @@ pub fn parse_fundamentals(
 
     Ok(Fundamentals {
         version: crate::models::FUNDAMENTALS_VERSION,
+        data_complete: price.is_some() && total_shares.is_some(),
         symbol: symbol.to_string(),
         market,
         revenue_growth,
@@ -476,6 +715,38 @@ mod tests {
     fn missing_data_is_error() {
         let breadth: Value = serde_json::from_str(r#"{"data":{}}"#).unwrap();
         assert!(parse_sentiment(&breadth, None, None, None).is_err());
+    }
+
+    #[test]
+    fn parses_sectors_and_movers() {
+        let sectors: Value = serde_json::from_str(
+            r#"{"data":{"diff":[{"f12":"BK1326","f14":"半导体设备","f3":15.22,"f128":"托伦斯"},{"f12":"BK1325","f14":"半导体材料","f3":11.89,"f128":"先导基电"}]}}"#,
+        )
+        .unwrap();
+        let payload = parse_sectors(&sectors).unwrap();
+        assert_eq!(payload.sectors.len(), 2);
+        assert_eq!(payload.sectors[0].name, "半导体设备");
+        assert!((payload.sectors[0].change_pct - 15.22).abs() < 1e-6);
+
+        let movers: Value = serde_json::from_str(
+            r#"{"data":{"diff":[{"f12":"688517","f14":"金冠电气","f2":21.46,"f3":20.02,"f6":348222307}]}}"#,
+        )
+        .unwrap();
+        let rows = parse_movers(&movers).unwrap();
+        assert_eq!(rows[0].symbol, "688517");
+        assert!((rows[0].change_pct - 20.02).abs() < 1e-6);
+    }
+
+    #[test]
+    fn parses_news() {
+        let news: Value = serde_json::from_str(
+            r#"{"data":{"fastNewsList":[{"title":"测试快讯","summary":"摘要","showTime":"2026-11-04 22:01:37","code":"202611043922272811"}]}}"#,
+        )
+        .unwrap();
+        let payload = parse_news(&news).unwrap();
+        assert_eq!(payload.items.len(), 1);
+        assert_eq!(payload.items[0].title, "测试快讯");
+        assert!(payload.items[0].url.contains("202611043922272811"));
     }
 
     #[test]

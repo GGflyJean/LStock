@@ -9,9 +9,11 @@ use reqwest::header::{HeaderMap, HeaderValue};
 
 use crate::config::ProviderConfig;
 use crate::models::{
-    CnSentimentRaw, DelayKind, Fundamentals, IndexPayload, Market, Quote, UsSentimentRaw,
+    CnSentimentRaw, DelayKind, Fundamentals, IndexPayload, MacroItem, MacroPayload, Market,
+    MoverItem, MoversPayload, NewsPayload, Quote, SectorItem, SectorPayload, UsSentimentRaw,
     WatchPayload,
 };
+use crate::rankings::DEFAULT_US_POOL;
 
 pub mod eastmoney;
 pub mod sina;
@@ -218,6 +220,7 @@ impl Providers {
                 config.eastmoney_base.clone(),
                 config.eastmoney_datacenter_base.clone(),
                 config.eastmoney_push2ex_base.clone(),
+                config.eastmoney_news_base.clone(),
                 config.eastmoney_fallback_bases.clone(),
                 Some(tencent),
             ),
@@ -458,6 +461,193 @@ impl Providers {
                 self.health
                     .record_err("yahoo-sentiment", &format!("{error:#}"));
                 Err(error)
+            }
+        }
+    }
+
+    pub async fn sectors(&self, market: Market) -> Result<SectorPayload> {
+        match market {
+            Market::Cn => match self.eastmoney.sectors().await {
+                Ok(value) => {
+                    self.health.record_ok("eastmoney-sectors");
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.health
+                        .record_err("eastmoney-sectors", &format!("{error:#}"));
+                    Err(error)
+                }
+            },
+            Market::Us => {
+                const US_SECTORS: [(&str, &str); 11] = [
+                    ("XLK", "科技"),
+                    ("XLF", "金融"),
+                    ("XLE", "能源"),
+                    ("XLV", "医疗"),
+                    ("XLY", "可选消费"),
+                    ("XLP", "日常消费"),
+                    ("XLI", "工业"),
+                    ("XLB", "材料"),
+                    ("XLRE", "房地产"),
+                    ("XLU", "公用事业"),
+                    ("XLC", "通信服务"),
+                ];
+                let symbols: Vec<String> = US_SECTORS
+                    .iter()
+                    .map(|(symbol, _)| symbol.to_string())
+                    .collect();
+                let payload = self.quotes(Market::Us, &symbols).await?;
+                let sectors = US_SECTORS
+                    .iter()
+                    .filter_map(|(symbol, label)| {
+                        payload
+                            .quotes
+                            .iter()
+                            .find(|quote| quote.symbol == *symbol)
+                            .map(|quote| SectorItem {
+                                code: symbol.to_string(),
+                                name: label.to_string(),
+                                change_pct: quote.change_pct,
+                                leading: quote.name.clone(),
+                                source: quote.source.clone(),
+                            })
+                    })
+                    .collect::<Vec<_>>();
+                if sectors.is_empty() {
+                    return Err(anyhow::anyhow!("美股板块数据为空"));
+                }
+                Ok(SectorPayload {
+                    sectors,
+                    source_note: payload.source_note,
+                    as_of_utc: payload.as_of_utc,
+                })
+            }
+        }
+    }
+
+    pub async fn movers(&self, market: Market, extra_symbols: &[String]) -> Result<MoversPayload> {
+        match market {
+            Market::Cn => match self.eastmoney.movers_cn().await {
+                Ok(value) => {
+                    self.health.record_ok("eastmoney-movers");
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.health
+                        .record_err("eastmoney-movers", &format!("{error:#}"));
+                    Err(error)
+                }
+            },
+            Market::Us => {
+                let mut symbols: Vec<String> = DEFAULT_US_POOL
+                    .iter()
+                    .map(|(symbol, _)| symbol.to_string())
+                    .collect();
+                symbols.extend(extra_symbols.iter().cloned());
+                symbols.sort();
+                symbols.dedup();
+                let payload = self.quotes(Market::Us, &symbols).await?;
+                let mut items: Vec<MoverItem> = payload
+                    .quotes
+                    .iter()
+                    .map(|quote| MoverItem {
+                        symbol: quote.symbol.clone(),
+                        name: if quote.name.is_empty() {
+                            quote.symbol.clone()
+                        } else {
+                            quote.name.clone()
+                        },
+                        price: quote.price,
+                        change_pct: quote.change_pct,
+                        amount: quote.amount,
+                    })
+                    .collect();
+                items.sort_by(|a, b| {
+                    b.change_pct
+                        .partial_cmp(&a.change_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+                let gainers = items.iter().take(15).cloned().collect();
+                let losers = items.iter().rev().take(15).cloned().collect();
+                Ok(MoversPayload {
+                    gainers,
+                    losers,
+                    source_note: payload.source_note,
+                    as_of_utc: payload.as_of_utc,
+                })
+            }
+        }
+    }
+
+    pub async fn news(&self) -> Result<NewsPayload> {
+        match self.eastmoney.news().await {
+            Ok(value) => {
+                self.health.record_ok("eastmoney-news");
+                Ok(value)
+            }
+            Err(error) => {
+                self.health
+                    .record_err("eastmoney-news", &format!("{error:#}"));
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn macro_data(&self, market: Market) -> Result<MacroPayload> {
+        match market {
+            Market::Cn => match self.eastmoney.macro_cn().await {
+                Ok(value) => {
+                    self.health.record_ok("eastmoney-macro");
+                    Ok(value)
+                }
+                Err(error) => {
+                    self.health
+                        .record_err("eastmoney-macro", &format!("{error:#}"));
+                    Err(error)
+                }
+            },
+            Market::Us => {
+                let mut items = Vec::new();
+                if let Ok(raw) = self.us_sentiment().await {
+                    if let Some(vix) = raw.vix {
+                        items.push(MacroItem {
+                            label: "VIX".to_string(),
+                            value: format!("{vix:.2}"),
+                            note: raw
+                                .vix_change_pct
+                                .map(|value| format!("{value:+.2}%"))
+                                .unwrap_or_default(),
+                        });
+                    }
+                }
+                if let Ok(indices) = self.indices(Market::Us).await {
+                    for quote in indices.indices {
+                        items.push(MacroItem {
+                            label: if quote.name.is_empty() {
+                                quote.symbol.clone()
+                            } else {
+                                quote.name.clone()
+                            },
+                            value: quote.price_text(),
+                            note: quote.pct_text(),
+                        });
+                    }
+                }
+                items.push(MacroItem {
+                    label: "10Y 美债".to_string(),
+                    value: "数据不足".to_string(),
+                    note: "Yahoo 在当前网络不可用".to_string(),
+                });
+                items.push(MacroItem {
+                    label: "美元指数".to_string(),
+                    value: "数据不足".to_string(),
+                    note: "Yahoo 在当前网络不可用".to_string(),
+                });
+                Ok(MacroPayload {
+                    items,
+                    source_note: "来源：腾讯行情（VIX / 指数）".to_string(),
+                    as_of_utc: Utc::now(),
+                })
             }
         }
     }

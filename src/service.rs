@@ -390,9 +390,60 @@ impl RefreshService {
                 self.store_snapshot(key.market, &key.scope(), as_of, &payload)?;
                 Ok(as_of)
             }
-            Tab::Sectors | Tab::Movers | Tab::News | Tab::Macro => {
-                tracing::warn!(scope = %key, "尝试刷新未开放 tab");
-                Err(anyhow::anyhow!("{} tab 暂未开放", key.tab.label()))
+            Tab::Sectors => {
+                let payload = self.providers.sectors(key.market).await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    sectors = payload.sectors.len(),
+                    source = %payload.source_note,
+                    "板块数据已获取"
+                );
+                let as_of = payload.as_of_utc;
+                self.store_snapshot(key.market, "sectors", as_of, &payload)?;
+                Ok(as_of)
+            }
+            Tab::Movers => {
+                let extra: Vec<String> = self
+                    .db
+                    .watchlist(key.market)?
+                    .into_iter()
+                    .map(|item| item.symbol)
+                    .collect();
+                let payload = self.providers.movers(key.market, &extra).await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    gainers = payload.gainers.len(),
+                    losers = payload.losers.len(),
+                    source = %payload.source_note,
+                    "涨跌榜数据已获取"
+                );
+                let as_of = payload.as_of_utc;
+                self.store_snapshot(key.market, "movers", as_of, &payload)?;
+                Ok(as_of)
+            }
+            Tab::News => {
+                let payload = self.providers.news().await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    items = payload.items.len(),
+                    source = %payload.source_note,
+                    "新闻数据已获取"
+                );
+                let as_of = payload.as_of_utc;
+                self.store_snapshot(key.market, "news", as_of, &payload)?;
+                Ok(as_of)
+            }
+            Tab::Macro => {
+                let payload = self.providers.macro_data(key.market).await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    items = payload.items.len(),
+                    source = %payload.source_note,
+                    "宏观数据已获取"
+                );
+                let as_of = payload.as_of_utc;
+                self.store_snapshot(key.market, "macro", as_of, &payload)?;
+                Ok(as_of)
             }
         }
     }
@@ -547,6 +598,10 @@ pub fn scheduled_scopes(market: Market) -> Vec<ScopeKey> {
         ScopeKey::new(market, Tab::Watch, None),
         ScopeKey::new(market, Tab::Index, None),
         ScopeKey::new(market, Tab::Sentiment, None),
+        ScopeKey::new(market, Tab::Sectors, None),
+        ScopeKey::new(market, Tab::Movers, None),
+        ScopeKey::new(market, Tab::News, None),
+        ScopeKey::new(market, Tab::Macro, None),
     ];
     for board in Board::ALL {
         keys.push(ScopeKey::new(market, Tab::Ranking, Some(board)));
@@ -630,7 +685,7 @@ mod tests {
     #[test]
     fn scheduled_scopes_cover_p0_tabs_and_boards() {
         let keys = scheduled_scopes(Market::Cn);
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 10);
         assert!(keys.iter().any(|key| key.scope() == "ranking:short"));
         assert!(keys.iter().any(|key| key.scope() == "ranking:dividend"));
     }
@@ -638,15 +693,17 @@ mod tests {
     #[test]
     fn startup_scopes_cover_both_markets() {
         let keys = startup_scopes();
-        assert_eq!(keys.len(), 12);
+        assert_eq!(keys.len(), 20);
         assert!(keys.iter().any(|key| key.market == Market::Cn));
         assert!(keys.iter().any(|key| key.market == Market::Us));
         assert!(keys.iter().any(|key| key.scope() == "ranking:dividend"));
     }
 
     #[test]
-    fn unsupported_tabs_have_no_scope() {
-        assert!(scopes_for(Market::Cn, Tab::News, None).is_empty());
+    fn all_tabs_have_refresh_scopes() {
+        for tab in Tab::ALL {
+            assert_eq!(scopes_for(Market::Cn, tab, None).len(), 1);
+        }
         assert_eq!(
             scopes_for(Market::Cn, Tab::Ranking, Some(Board::Long)).len(),
             1

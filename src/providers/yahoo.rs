@@ -225,8 +225,14 @@ pub fn parse_fundamentals(json: &Value, market: Market, symbol: &str) -> Result<
                 .or_else(|| value.as_f64())
         })
     };
+    let any_present = numeric(financial, "revenueGrowth").is_some()
+        || numeric(financial, "earningsGrowth").is_some()
+        || numeric(financial, "returnOnEquity").is_some()
+        || numeric(financial, "freeCashflow").is_some()
+        || numeric(summary, "dividendYield").is_some();
     let fundamentals = Fundamentals {
         version: crate::models::FUNDAMENTALS_VERSION,
+        data_complete: any_present,
         symbol: symbol.to_string(),
         market,
         revenue_growth: numeric(financial, "revenueGrowth").map(|value| value * 100.0),
@@ -243,11 +249,6 @@ pub fn parse_fundamentals(json: &Value, market: Market, symbol: &str) -> Result<
         dividend_growth: numeric(summary, "fiveYearAvgDividendYield"),
         fcf_coverage: None,
     };
-    let any_present = fundamentals.revenue_growth.is_some()
-        || fundamentals.eps_growth.is_some()
-        || fundamentals.roe.is_some()
-        || fundamentals.free_cash_flow.is_some()
-        || fundamentals.dividend_yield.is_some();
     if !any_present {
         return Err(anyhow::anyhow!("Yahoo 基本面字段全部缺失"));
     }
