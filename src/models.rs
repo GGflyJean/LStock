@@ -602,10 +602,22 @@ pub struct NewsPayload {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MacroPoint {
+    pub date: String,
+    pub value: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MacroItem {
     pub label: String,
     pub value: String,
     pub note: String,
+    #[serde(default)]
+    pub unit: String,
+    #[serde(default)]
+    pub frequency: String,
+    #[serde(default)]
+    pub series: Vec<MacroPoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::market::is_trading_day;
 use crate::models::{
-    CnSentimentRaw, Fundamentals, MacroItem, MacroPayload, Market, MoverItem, MoversPayload,
-    NewsItem, NewsPayload, SectorItem, SectorPayload,
+    CnSentimentRaw, Fundamentals, MacroItem, MacroPayload, MacroPoint, Market, MoverItem,
+    MoversPayload, NewsItem, NewsPayload, SectorItem, SectorPayload,
 };
 
 use super::{tencent::TencentProvider, CnSentimentProvider, FundamentalProvider, HttpClient};
@@ -70,9 +70,9 @@ impl EastmoneyProvider {
 }
 
 impl EastmoneyProvider {
-    async fn report(&self, name: &str) -> Result<Value> {
+    async fn report_series(&self, name: &str) -> Result<Value> {
         let url = format!(
-            "{}/api/data/v1/get?reportName={name}&columns=ALL&pageNumber=1&pageSize=1&sortColumns=REPORT_DATE&sortTypes=-1",
+            "{}/api/data/v1/get?reportName={name}&columns=ALL&pageNumber=1&pageSize=500&sortColumns=REPORT_DATE&sortTypes=-1",
             self.datacenter_base.trim_end_matches('/')
         );
         self.http
@@ -130,27 +130,27 @@ impl EastmoneyProvider {
 
     pub async fn macro_cn(&self) -> Result<MacroPayload> {
         let (gdp, cpi, ppi, pmi, m2) = tokio::join!(
-            self.report("RPT_ECONOMY_GDP"),
-            self.report("RPT_ECONOMY_CPI"),
-            self.report("RPT_ECONOMY_PPI"),
-            self.report("RPT_ECONOMY_PMI"),
-            self.report("RPT_ECONOMY_CURRENCY_SUPPLY")
+            self.report_series("RPT_ECONOMY_GDP"),
+            self.report_series("RPT_ECONOMY_CPI"),
+            self.report_series("RPT_ECONOMY_PPI"),
+            self.report_series("RPT_ECONOMY_PMI"),
+            self.report_series("RPT_ECONOMY_CURRENCY_SUPPLY")
         );
         let mut items = Vec::new();
-        if let Some(row) = latest_row(&gdp.unwrap_or_default()) {
-            items.push(macro_pct("GDP 同比", row, "SUM_SAME"));
+        if let Some(item) = macro_series("GDP 同比", "%", "quarter", gdp, "SUM_SAME") {
+            items.push(item);
         }
-        if let Some(row) = latest_row(&cpi.unwrap_or_default()) {
-            items.push(macro_pct("CPI 同比", row, "NATIONAL_SAME"));
+        if let Some(item) = macro_series("CPI 同比", "%", "month", cpi, "NATIONAL_SAME") {
+            items.push(item);
         }
-        if let Some(row) = latest_row(&ppi.unwrap_or_default()) {
-            items.push(macro_pct("PPI 同比", row, "BASE_SAME"));
+        if let Some(item) = macro_series("PPI 同比", "%", "month", ppi, "BASE_SAME") {
+            items.push(item);
         }
-        if let Some(row) = latest_row(&pmi.unwrap_or_default()) {
-            items.push(macro_value("制造业 PMI", row, "MAKE_INDEX"));
+        if let Some(item) = macro_series("制造业 PMI", "", "month", pmi, "MAKE_INDEX") {
+            items.push(item);
         }
-        if let Some(row) = latest_row(&m2.unwrap_or_default()) {
-            items.push(macro_pct("M2 同比", row, "CURRENCY_SAME"));
+        if let Some(item) = macro_series("M2 同比", "%", "month", m2, "CURRENCY_SAME") {
+            items.push(item);
         }
         if items.is_empty() {
             return Err(anyhow::anyhow!("东方财富宏观数据全部不可用"));
@@ -264,41 +264,50 @@ fn rows(json: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| anyhow::anyhow!("响应缺少 data.diff"))
 }
 
-fn latest_row(json: &Value) -> Option<&Value> {
-    json.get("result")
+fn macro_series(
+    label: &str,
+    unit: &str,
+    frequency: &str,
+    report: Result<Value>,
+    key: &str,
+) -> Option<MacroItem> {
+    let report = report.ok()?;
+    let rows = report
+        .get("result")
         .and_then(|result| result.get("data"))
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first())
-}
-
-fn macro_pct(label: &str, row: &Value, key: &str) -> MacroItem {
-    let value = number(row, key);
-    MacroItem {
-        label: label.to_string(),
-        value: value
-            .map(|value| format!("{:+.2}%", value))
-            .unwrap_or_else(|| "数据不足".to_string()),
-        note: row
-            .get("TIME")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        .and_then(Value::as_array)?;
+    let mut series: Vec<MacroPoint> = rows
+        .iter()
+        .filter_map(|row| {
+            let date = row.get("REPORT_DATE").and_then(Value::as_str)?.to_string();
+            let value = number(row, key)?;
+            Some(MacroPoint { date, value })
+        })
+        .collect();
+    if series.is_empty() {
+        return None;
     }
-}
-
-fn macro_value(label: &str, row: &Value, key: &str) -> MacroItem {
-    let value = number(row, key);
-    MacroItem {
+    series.sort_by(|a, b| a.date.cmp(&b.date));
+    let latest = series.last()?;
+    let note = rows
+        .first()
+        .and_then(|row| row.get("TIME"))
+        .and_then(Value::as_str)
+        .unwrap_or(&latest.date)
+        .to_string();
+    let value = if unit == "%" {
+        format!("{:+.2}%", latest.value)
+    } else {
+        format!("{:.1}", latest.value)
+    };
+    Some(MacroItem {
         label: label.to_string(),
-        value: value
-            .map(|value| format!("{:.1}", value))
-            .unwrap_or_else(|| "数据不足".to_string()),
-        note: row
-            .get("TIME")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-    }
+        value,
+        note,
+        unit: unit.to_string(),
+        frequency: frequency.to_string(),
+        series,
+    })
 }
 
 #[async_trait]
@@ -747,6 +756,24 @@ mod tests {
         assert_eq!(payload.items.len(), 1);
         assert_eq!(payload.items[0].title, "测试快讯");
         assert!(payload.items[0].url.contains("202611043922272811"));
+    }
+
+    #[test]
+    fn builds_macro_series_ascending() {
+        let report: Value = serde_json::from_str(
+            r#"{"result":{"data":[
+                {"REPORT_DATE":"2026-09-01 00:00:00","TIME":"2026年09月份","NATIONAL_SAME":0.9},
+                {"REPORT_DATE":"2026-08-01 00:00:00","TIME":"2026年08月份","NATIONAL_SAME":0.6},
+                {"REPORT_DATE":"2026-07-01 00:00:00","TIME":"2026年07月份","NATIONAL_SAME":0.4}
+            ]}}"#,
+        )
+        .unwrap();
+        let item = macro_series("CPI 同比", "%", "month", Ok(report), "NATIONAL_SAME").unwrap();
+        assert_eq!(item.series.len(), 3);
+        assert_eq!(item.series[0].date, "2026-07-01 00:00:00");
+        assert_eq!(item.series[2].date, "2026-09-01 00:00:00");
+        assert!((item.series[2].value - 0.9).abs() < 1e-6);
+        assert_eq!(item.value, "+0.90%");
     }
 
     #[test]

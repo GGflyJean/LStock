@@ -213,14 +213,26 @@
       <div class="placeholder">{{ pane.placeholder }}</div>
       {% endif %}
     {% else if pane.show_macro %}
-      {% if !pane.macro_items.is_empty() %}
-      <div class="metrics">
-        {% for item in pane.macro_items %}
-        <div class="metric">
-          <div class="metric-label">{{ item.label }}</div>
-          <div class="metric-value">{{ item.value }}</div>
-          {% if !item.note.is_empty() %}<div class="metric-note">{{ item.note }}</div>{% endif %}
+      {% if !pane.macro_charts.is_empty() %}
+      <div class="macro-pane">
+        <div class="macro-toolbar">
+          <span class="muted">时间粒度</span>
+          <select class="macro-granularity">
+            <option value="month">月</option>
+            <option value="quarter">季度</option>
+            <option value="half">半年</option>
+            <option value="year" selected>年</option>
+          </select>
         </div>
+        {% for chart in pane.macro_charts %}
+        <section class="macro-chart">
+          <div class="macro-chart-head">
+            <h3>{{ chart.label }}</h3>
+            <span class="macro-value">{{ chart.value }}</span>
+            <span class="macro-note">{{ chart.note }}</span>
+          </div>
+          <canvas class="macro-canvas" height="180" data-unit="{{ chart.unit }}" data-series="{{ chart.series_json }}"></canvas>
+        </section>
         {% endfor %}
       </div>
       {% else %}

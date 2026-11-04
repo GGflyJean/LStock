@@ -419,3 +419,43 @@ input {
 @media (max-width: 1200px) {
   .movers { grid-template-columns: 1fr; }
 }
+
+.macro-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.macro-toolbar select {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.macro-chart {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.macro-chart-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.macro-chart-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.macro-value { font-size: 18px; font-weight: 700; }
+.macro-note { color: var(--muted); font-size: 12px; }
+.macro-canvas { width: 100%; height: 180px; display: block; }

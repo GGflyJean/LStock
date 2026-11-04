@@ -565,6 +565,18 @@ async fn new_tabs_render_snapshots() {
             label: "CPI 同比".to_string(),
             value: "+0.90%".to_string(),
             note: "2026年09月份".to_string(),
+            unit: "%".to_string(),
+            frequency: "month".to_string(),
+            series: vec![
+                l_stock::models::MacroPoint {
+                    date: "2026-08-01".to_string(),
+                    value: 0.6,
+                },
+                l_stock::models::MacroPoint {
+                    date: "2026-09-01".to_string(),
+                    value: 0.9,
+                },
+            ],
         }],
         source_note: "来源：测试".to_string(),
         as_of_utc: now,
@@ -584,7 +596,7 @@ async fn new_tabs_render_snapshots() {
         ("sectors", "半导体设备"),
         ("movers", "涨幅榜"),
         ("news", "测试快讯"),
-        ("macro", "CPI 同比"),
+        ("macro", "macro-canvas"),
     ];
     for (tab, expected) in checks {
         let response = h
@@ -595,5 +607,9 @@ async fn new_tabs_render_snapshots() {
         let body = support::body_text(response).await;
         assert!(body.contains(expected), "tab={tab} missing {expected}");
         assert!(!body.contains("暂未开放"), "tab={tab} still pending");
+        if tab == "macro" {
+            assert!(body.contains("时间粒度"));
+            assert!(body.contains("data-series"));
+        }
     }
 }

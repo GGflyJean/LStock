@@ -617,6 +617,9 @@ impl Providers {
                                 .vix_change_pct
                                 .map(|value| format!("{value:+.2}%"))
                                 .unwrap_or_default(),
+                            unit: String::new(),
+                            frequency: "day".to_string(),
+                            series: Vec::new(),
                         });
                     }
                 }
@@ -630,6 +633,9 @@ impl Providers {
                             },
                             value: quote.price_text(),
                             note: quote.pct_text(),
+                            unit: String::new(),
+                            frequency: "day".to_string(),
+                            series: Vec::new(),
                         });
                     }
                 }
@@ -637,11 +643,17 @@ impl Providers {
                     label: "10Y 美债".to_string(),
                     value: "数据不足".to_string(),
                     note: "Yahoo 在当前网络不可用".to_string(),
+                    unit: "%".to_string(),
+                    frequency: "day".to_string(),
+                    series: Vec::new(),
                 });
                 items.push(MacroItem {
                     label: "美元指数".to_string(),
                     value: "数据不足".to_string(),
                     note: "Yahoo 在当前网络不可用".to_string(),
+                    unit: String::new(),
+                    frequency: "day".to_string(),
+                    series: Vec::new(),
                 });
                 Ok(MacroPayload {
                     items,

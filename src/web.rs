@@ -21,10 +21,9 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::market::session_state;
 use crate::models::{
-    normalize_symbol, Board, IndexPayload, InsufficientItem, MacroItem, MacroPayload, Market,
-    MoverItem, MoversPayload, NewsItem, NewsPayload, RankingItem, RankingPayload, RefreshRun,
-    ScopeKey, SectorItem, SectorPayload, SentimentMetric, SentimentReport, Tab, WatchItem,
-    WatchPayload,
+    normalize_symbol, Board, IndexPayload, InsufficientItem, MacroPayload, Market, MoverItem,
+    MoversPayload, NewsItem, NewsPayload, RankingItem, RankingPayload, RefreshRun, ScopeKey,
+    SectorItem, SectorPayload, SentimentMetric, SentimentReport, Tab, WatchItem, WatchPayload,
 };
 use crate::rankings;
 use crate::service::{scopes_for, RefreshService};
@@ -129,7 +128,16 @@ struct PaneView {
     movers_gainers: Vec<MoverItem>,
     movers_losers: Vec<MoverItem>,
     news: Vec<NewsItem>,
-    macro_items: Vec<MacroItem>,
+    macro_charts: Vec<MacroChartView>,
+}
+
+#[derive(Debug, Clone)]
+struct MacroChartView {
+    label: String,
+    value: String,
+    note: String,
+    unit: String,
+    series_json: String,
 }
 
 #[derive(Debug, Clone)]
@@ -368,7 +376,7 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
         movers_gainers: Vec::new(),
         movers_losers: Vec::new(),
         news: Vec::new(),
-        macro_items: Vec::new(),
+        macro_charts: Vec::new(),
     };
 
     if !tab.supported() {
@@ -485,11 +493,22 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
                 .service
                 .latest_snapshot::<MacroPayload>(market, "macro")
             {
-                pane.macro_items = payload.items;
+                pane.macro_charts = payload
+                    .items
+                    .into_iter()
+                    .map(|item| MacroChartView {
+                        label: item.label,
+                        value: item.value,
+                        note: item.note,
+                        unit: item.unit,
+                        series_json: serde_json::to_string(&item.series)
+                            .unwrap_or_else(|_| "[]".to_string()),
+                    })
+                    .collect();
                 pane.source_note = payload.source_note;
                 as_of = Some(snapshot.as_of_utc);
             }
-            if pane.macro_items.is_empty() {
+            if pane.macro_charts.is_empty() {
                 pane.placeholder = "暂无宏观快照，点击手动刷新抓取。".to_string();
             }
         }
