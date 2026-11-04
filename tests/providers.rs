@@ -1,9 +1,9 @@
 use l_stock::config::ProviderConfig;
 use l_stock::models::{Board, Market};
 use l_stock::providers::{
-    eastmoney::EastmoneyProvider, stooq::StooqProvider, tencent::TencentProvider,
-    yahoo::YahooProvider, CnSentimentProvider, FundamentalProvider, HttpClient, IndexProvider,
-    Providers, QuoteProvider,
+    eastmoney::EastmoneyProvider, sina::SinaProvider, stooq::StooqProvider,
+    tencent::TencentProvider, yahoo::YahooProvider, CnSentimentProvider, FundamentalProvider,
+    HttpClient, IndexProvider, Providers, QuoteProvider,
 };
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -213,4 +213,57 @@ async fn yahoo_fundamentals_are_persisted_shape() {
     assert!(fundamentals
         .missing_for(Board::Long)
         .contains(&"ROIC(roic)".to_string()));
+}
+
+#[tokio::test]
+async fn tencent_us_indices_are_mapped_to_canonical_symbols() {
+    let server = MockServer::start().await;
+    let mut body = Vec::new();
+    for (index, (name, symbol, price, prev)) in [
+        ("道琼斯", "usDJI", "51786.72", "51983.98"),
+        ("纳斯达克", "usIXIC", "25372.01", "25164.36"),
+        ("标普500", "usINX", "7568.92", "7541.40"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            body.push(b'\n');
+        }
+        body.extend_from_slice(&tencent_payload(name, symbol, price, prev));
+    }
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = TencentProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let indices = provider.indices(Market::Us).await.unwrap();
+    let symbols: Vec<&str> = indices.iter().map(|quote| quote.symbol.as_str()).collect();
+    assert_eq!(symbols, vec!["^DJI", "^IXIC", "^GSPC"]);
+    assert_eq!(indices[0].delay, l_stock::models::DelayKind::Delayed);
+}
+
+#[tokio::test]
+async fn sina_us_indices_are_supported() {
+    let server = MockServer::start().await;
+    let body = concat!(
+        "var hq_str_gb_$dji=\"道琼斯,51786.7188,-0.38,2026-11-04 05:35:05,-197.26,51932.6,51932.6,51593.1\";\n",
+        "var hq_str_gb_ixic=\"纳斯达克,25372.0094,0.83,2026-11-04 06:30:00,207.64,25246.6,25474.4,25246.6\";\n",
+        "var hq_str_gb_inx=\"标普500,7568.92,0.36,2026-11-04 05:30:00,27.52,7552.9,7594.6,7545.3\";\n"
+    );
+    let (bytes, _, _) = encoding_rs::GBK.encode(body);
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = SinaProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let indices = provider.indices(Market::Us).await.unwrap();
+    let symbols: Vec<&str> = indices.iter().map(|quote| quote.symbol.as_str()).collect();
+    assert_eq!(symbols, vec!["^DJI", "^IXIC", "^GSPC"]);
+    assert!((indices[0].price - 51786.7188).abs() < 1e-6);
+    assert!((indices[0].change + 197.26).abs() < 1e-6);
 }

@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::models::{normalize_symbol, tencent_symbol, DelayKind, Market, Quote};
+use crate::models::{normalize_symbol, tencent_symbol, DelayKind, Market, Quote, UsSentimentRaw};
 
-use super::{HttpClient, IndexProvider, QuoteProvider};
+use super::{HttpClient, IndexProvider, QuoteProvider, UsSentimentProvider};
 
 const CN_INDICES: [&str; 3] = ["sh000001", "sz399001", "sz399006"];
 const US_INDICES: [(&str, &str); 3] = [("usDJI", "^DJI"), ("usIXIC", "^IXIC"), ("usINX", "^GSPC")];
@@ -25,7 +25,11 @@ impl TencentProvider {
             .iter()
             .map(|symbol| tencent_symbol(market, symbol))
             .collect();
-        let url = format!("{}?q={}", self.base.trim_end_matches('/'), query.join(","));
+        self.fetch_codes(market, &query).await
+    }
+
+    async fn fetch_codes(&self, market: Market, codes: &[String]) -> Result<Vec<Quote>> {
+        let url = format!("{}?q={}", self.base.trim_end_matches('/'), codes.join(","));
         let bytes = self
             .http
             .get_bytes(&url, &[("Referer", "https://finance.qq.com/")])
@@ -59,13 +63,14 @@ impl IndexProvider for TencentProvider {
                 self.fetch(Market::Cn, &symbols).await
             }
             Market::Us => {
-                let symbols: Vec<String> =
+                let codes: Vec<String> =
                     US_INDICES.iter().map(|(raw, _)| raw.to_string()).collect();
-                let mut quotes = self.fetch(Market::Us, &symbols).await?;
+                let mut quotes = self.fetch_codes(Market::Us, &codes).await?;
                 for quote in &mut quotes {
+                    let raw = format!("us{}", quote.symbol);
                     if let Some((_, canonical)) = US_INDICES
                         .iter()
-                        .find(|(raw, _)| raw.eq_ignore_ascii_case(&quote.symbol))
+                        .find(|(code, _)| code.eq_ignore_ascii_case(&raw))
                     {
                         quote.symbol = canonical.to_string();
                     }
@@ -73,6 +78,33 @@ impl IndexProvider for TencentProvider {
                 Ok(quotes)
             }
         }
+    }
+}
+
+#[async_trait]
+impl UsSentimentProvider for TencentProvider {
+    fn name(&self) -> &'static str {
+        "腾讯行情 VIX"
+    }
+
+    async fn sentiment(&self) -> Result<UsSentimentRaw> {
+        let quotes = self.fetch_codes(Market::Us, &["usVIX".to_string()]).await?;
+        let vix = quotes
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("腾讯 VIX 响应为空"))?;
+        Ok(UsSentimentRaw {
+            vix: Some(vix.price),
+            vix_change_pct: Some(vix.change_pct),
+            advance: None,
+            decline: None,
+            new_high: None,
+            new_low: None,
+            pcr: None,
+            ten_year: None,
+            dxy: None,
+            source: "腾讯行情 VIX".to_string(),
+            as_of_utc: vix.as_of_utc,
+        })
     }
 }
 
@@ -107,7 +139,11 @@ pub fn parse_response(bytes: &[u8], market: Market) -> Result<Vec<Quote>> {
             change_pct = change / prev_close * 100.0;
         }
         let volume = parse_f64(fields.get(6)).unwrap_or_default();
-        let amount = parse_f64(fields.get(37)).unwrap_or_default();
+        let amount = if market == Market::Cn {
+            parse_f64(fields.get(37)).unwrap_or_default() * 10000.0
+        } else {
+            0.0
+        };
         quotes.push(Quote {
             market,
             symbol: canonical,
@@ -124,7 +160,11 @@ pub fn parse_response(bytes: &[u8], market: Market) -> Result<Vec<Quote>> {
             breakout_pct: None,
             volatility: None,
             source: "腾讯行情".to_string(),
-            delay: DelayKind::Realtime,
+            delay: if market == Market::Us {
+                DelayKind::Delayed
+            } else {
+                DelayKind::Realtime
+            },
             as_of_utc: as_of,
         });
     }

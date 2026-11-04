@@ -293,6 +293,9 @@ impl Quote {
     }
 
     pub fn volume_text(&self) -> String {
+        if self.market == Market::Us && self.volume > 0.0 {
+            return format!("{:.0}", self.volume);
+        }
         if self.amount > 0.0 {
             format!("{:.2} 亿", self.amount / 1_0000_0000.0)
         } else if self.volume > 0.0 {

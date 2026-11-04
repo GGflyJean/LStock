@@ -7,6 +7,11 @@ use crate::models::{normalize_symbol, sina_symbol, DelayKind, Market, Quote};
 use super::{HttpClient, IndexProvider, QuoteProvider};
 
 const CN_INDICES: [&str; 3] = ["sh000001", "sz399001", "sz399006"];
+const US_INDICES: [(&str, &str); 3] = [
+    ("gb_$dji", "^DJI"),
+    ("gb_ixic", "^IXIC"),
+    ("gb_inx", "^GSPC"),
+];
 
 #[derive(Clone)]
 pub struct SinaProvider {
@@ -24,10 +29,14 @@ impl SinaProvider {
             .iter()
             .map(|symbol| sina_symbol(market, symbol))
             .collect();
+        self.fetch_codes(&query, market).await
+    }
+
+    async fn fetch_codes(&self, codes: &[String], market: Market) -> Result<Vec<Quote>> {
         let url = format!(
             "{}?list={}",
             self.base.trim_end_matches('/'),
-            query.join(",")
+            codes.join(",")
         );
         let bytes = self
             .http
@@ -61,7 +70,20 @@ impl IndexProvider for SinaProvider {
                     CN_INDICES.iter().map(|value| value.to_string()).collect();
                 self.fetch(Market::Cn, &symbols).await
             }
-            Market::Us => Err(anyhow::anyhow!("新浪暂不支持美股指数")),
+            Market::Us => {
+                let codes: Vec<String> =
+                    US_INDICES.iter().map(|(raw, _)| raw.to_string()).collect();
+                let mut quotes = self.fetch_codes(&codes, Market::Us).await?;
+                for quote in &mut quotes {
+                    if let Some((_, canonical)) = US_INDICES
+                        .iter()
+                        .find(|(_, canonical)| **canonical == quote.symbol)
+                    {
+                        quote.symbol = canonical.to_string();
+                    }
+                }
+                Ok(quotes)
+            }
         }
     }
 }
@@ -88,29 +110,29 @@ pub fn parse_response(bytes: &[u8], market: Market) -> Result<Vec<Quote>> {
         }
         let is_us = symbol.starts_with("gb_");
         let canonical = if is_us {
-            normalize_symbol(Market::Us, &symbol[3..]).map_err(|e| anyhow::anyhow!("{e}"))?
+            match symbol[3..].to_ascii_lowercase().as_str() {
+                "$dji" => "^DJI".to_string(),
+                "ixic" => "^IXIC".to_string(),
+                "inx" => "^GSPC".to_string(),
+                other => normalize_symbol(Market::Us, other).map_err(|e| anyhow::anyhow!("{e}"))?,
+            }
         } else {
             normalize_symbol(market, symbol).map_err(|e| anyhow::anyhow!("{e}"))?
         };
         let name = fields[0].to_string();
         let (price, prev_close, change, change_pct, volume, amount) = if is_us {
             let price = parse_f64(fields.get(1)).unwrap_or_default();
+            let change = parse_f64(fields.get(4)).unwrap_or_default();
             let change_pct = parse_f64(fields.get(2)).unwrap_or_default();
-            let prev_close = if change_pct.abs() > f64::EPSILON {
+            let prev_close = if change.abs() > f64::EPSILON {
+                price - change
+            } else if change_pct.abs() > f64::EPSILON {
                 price / (1.0 + change_pct / 100.0)
             } else {
                 price
             };
             let volume = parse_f64(fields.get(10)).unwrap_or_default();
-            let amount = parse_f64(fields.get(11)).unwrap_or_default();
-            (
-                price,
-                prev_close,
-                price - prev_close,
-                change_pct,
-                volume,
-                amount,
-            )
+            (price, prev_close, change, change_pct, volume, 0.0)
         } else {
             let prev_close = parse_f64(fields.get(2)).unwrap_or_default();
             let price = parse_f64(fields.get(3)).unwrap_or_default();
@@ -140,7 +162,11 @@ pub fn parse_response(bytes: &[u8], market: Market) -> Result<Vec<Quote>> {
             breakout_pct: None,
             volatility: None,
             source: "新浪行情".to_string(),
-            delay: DelayKind::Realtime,
+            delay: if market == Market::Us {
+                DelayKind::Delayed
+            } else {
+                DelayKind::Realtime
+            },
             as_of_utc: as_of,
         });
     }

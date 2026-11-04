@@ -235,7 +235,11 @@ impl Providers {
         let mut errors = Vec::new();
         let attempts: Vec<(&str, &dyn QuoteProvider)> = match market {
             Market::Cn => vec![("tencent", &self.tencent), ("sina", &self.sina)],
-            Market::Us => vec![("tencent", &self.tencent), ("yahoo", &self.yahoo)],
+            Market::Us => vec![
+                ("tencent", &self.tencent),
+                ("sina", &self.sina),
+                ("yahoo", &self.yahoo),
+            ],
         };
         for (name, provider) in attempts {
             let started = Instant::now();
@@ -312,9 +316,10 @@ impl Providers {
         let attempts: Vec<(&str, &dyn IndexProvider)> = match market {
             Market::Cn => vec![("tencent", &self.tencent), ("sina", &self.sina)],
             Market::Us => vec![
-                ("yahoo", &self.yahoo),
-                ("stooq", &self.stooq),
                 ("tencent", &self.tencent),
+                ("sina", &self.sina),
+                ("stooq", &self.stooq),
+                ("yahoo", &self.yahoo),
             ],
         };
         for (name, provider) in attempts {
@@ -407,18 +412,43 @@ impl Providers {
 
     pub async fn us_sentiment(&self) -> Result<UsSentimentRaw> {
         let started = Instant::now();
-        tracing::info!("尝试美股情绪源 Yahoo");
-        match self.yahoo.sentiment().await {
-            Ok(value) => {
-                tracing::info!(elapsed_ms = started.elapsed().as_millis(), "美股情绪源成功");
-                self.health.record_ok("yahoo-sentiment");
-                Ok(value)
+        tracing::info!("尝试美股情绪源 腾讯 VIX");
+        match self.tencent.sentiment().await {
+            Ok(mut value) => {
+                value.source = "腾讯行情 VIX（Yahoo 不可用，缺失指标已标注）".to_string();
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    vix = ?value.vix,
+                    "美股情绪源腾讯 VIX 成功"
+                );
+                self.health.record_ok("tencent-sentiment");
+                return Ok(value);
             }
             Err(error) => {
                 tracing::warn!(
                     elapsed_ms = started.elapsed().as_millis(),
                     error = %format!("{error:#}"),
-                    "美股情绪源失败"
+                    "美股情绪源腾讯 VIX 失败，尝试 Yahoo"
+                );
+                self.health
+                    .record_err("tencent-sentiment", &format!("{error:#}"));
+            }
+        }
+        let started = Instant::now();
+        match self.yahoo.sentiment().await {
+            Ok(value) => {
+                tracing::info!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "美股情绪源 Yahoo 成功"
+                );
+                self.health.record_ok("yahoo-sentiment");
+                Ok(value)
+            }
+            Err(error) => {
+                tracing::error!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %format!("{error:#}"),
+                    "美股情绪源全部失败"
                 );
                 self.health
                     .record_err("yahoo-sentiment", &format!("{error:#}"));

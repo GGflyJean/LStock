@@ -211,7 +211,7 @@ pub fn compute_us(raw: &UsSentimentRaw) -> SentimentReport {
         metrics,
         missing,
         source: raw.source.clone(),
-        delay: if raw.source.contains("Yahoo") {
+        delay: if raw.source.contains("Yahoo") || raw.source.contains("腾讯") {
             DelayKind::Delayed
         } else {
             DelayKind::Realtime
