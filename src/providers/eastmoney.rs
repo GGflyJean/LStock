@@ -8,14 +8,15 @@ use serde_json::Value;
 use crate::market::is_trading_day;
 use crate::models::{CnSentimentRaw, Fundamentals, Market};
 
-use super::{CnSentimentProvider, FundamentalProvider, HttpClient};
+use super::{tencent::TencentProvider, CnSentimentProvider, FundamentalProvider, HttpClient};
 
 #[derive(Clone)]
 pub struct EastmoneyProvider {
     http: HttpClient,
-    base: String,
+    bases: Vec<String>,
     datacenter_base: String,
     push2ex_base: String,
+    tencent: Option<TencentProvider>,
 }
 
 impl EastmoneyProvider {
@@ -24,13 +25,41 @@ impl EastmoneyProvider {
         base: String,
         datacenter_base: String,
         push2ex_base: String,
+        fallbacks: Vec<String>,
+        tencent: Option<TencentProvider>,
     ) -> Self {
+        let mut bases = vec![base];
+        for fallback in fallbacks {
+            if !bases.iter().any(|item| item == &fallback) {
+                bases.push(fallback);
+            }
+        }
         Self {
             http,
-            base,
+            bases,
             datacenter_base,
             push2ex_base,
+            tencent,
         }
+    }
+
+    async fn push2_json(&self, path: &str, headers: &[(&str, &str)]) -> Result<Value> {
+        let mut last_error = None;
+        for base in &self.bases {
+            let url = format!("{}{}", base.trim_end_matches('/'), path);
+            match self.http.get_json(&url, headers).await {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    tracing::warn!(
+                        base = %base,
+                        error = %format!("{error:#}"),
+                        "东财 push2 请求失败，尝试下一个地址"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("没有可用的东财 push2 地址")))
     }
 }
 
@@ -50,13 +79,11 @@ impl CnSentimentProvider for EastmoneyProvider {
             date -= Duration::days(1);
         }
         let date_str = date.format("%Y%m%d").to_string();
-        let breadth_url = format!(
-            "{}/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399106&fields=f12,f14,f104,f105,f106,f6",
-            self.base.trim_end_matches('/')
-        );
         let breadth = self
-            .http
-            .get_json(&breadth_url, &[("Referer", "https://quote.eastmoney.com/")])
+            .push2_json(
+                "/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399106&fields=f12,f14,f104,f105,f106,f6",
+                &[("Referer", "https://quote.eastmoney.com/")],
+            )
             .await
             .with_context(|| "东方财富涨跌家数请求失败")?;
 
@@ -127,19 +154,43 @@ impl FundamentalProvider for EastmoneyProvider {
                 serde_json::json!({})
             });
 
-        let stock_url = format!(
-            "{}/api/qt/stock/get?secid={}&fltt=2&fields=f43,f84,f162",
-            self.base.trim_end_matches('/'),
+        let stock_path = format!(
+            "/api/qt/stock/get?secid={}&fltt=2&fields=f43,f84,f162",
             secid(symbol)?
         );
-        let stock = self
-            .http
-            .get_json(&stock_url, &[("Referer", "https://quote.eastmoney.com/")])
+        let mut stock = self
+            .push2_json(&stock_path, &[("Referer", "https://quote.eastmoney.com/")])
             .await
             .unwrap_or_else(|error| {
-                tracing::warn!(symbol, error = %format!("{error:#}"), "估值/股本数据抓取失败");
+                tracing::warn!(
+                    symbol,
+                    error = %format!("{error:#}"),
+                    "东财估值/股本数据全部失败，尝试腾讯"
+                );
                 serde_json::json!({})
             });
+        let missing_valuation = stock
+            .get("data")
+            .map(|data| {
+                number(data, "f43").is_none()
+                    || number(data, "f84").is_none()
+                    || number(data, "f162").is_none()
+            })
+            .unwrap_or(true);
+        if missing_valuation {
+            if let Some(tencent) = &self.tencent {
+                if let Ok(valuation) = tencent.valuation(Market::Cn, symbol).await {
+                    tracing::info!(symbol, "使用腾讯估值数据补齐 PE/股本/价格");
+                    stock = serde_json::json!({
+                        "data": {
+                            "f43": valuation.price,
+                            "f84": valuation.total_shares,
+                            "f162": valuation.pe,
+                        }
+                    });
+                }
+            }
+        }
 
         parse_fundamentals(&main, &dividends, &stock, symbol, market)
     }
@@ -345,6 +396,7 @@ pub fn parse_fundamentals(
     };
 
     Ok(Fundamentals {
+        version: crate::models::FUNDAMENTALS_VERSION,
         symbol: symbol.to_string(),
         market,
         revenue_growth,

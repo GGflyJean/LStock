@@ -226,6 +226,7 @@ pub fn parse_fundamentals(json: &Value, market: Market, symbol: &str) -> Result<
         })
     };
     let fundamentals = Fundamentals {
+        version: crate::models::FUNDAMENTALS_VERSION,
         symbol: symbol.to_string(),
         market,
         revenue_growth: numeric(financial, "revenueGrowth").map(|value| value * 100.0),

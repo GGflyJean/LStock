@@ -9,6 +9,13 @@ use super::{HttpClient, IndexProvider, QuoteProvider, UsSentimentProvider};
 const CN_INDICES: [&str; 3] = ["sh000001", "sz399001", "sz399006"];
 const US_INDICES: [(&str, &str); 3] = [("usDJI", "^DJI"), ("usIXIC", "^IXIC"), ("usINX", "^GSPC")];
 
+#[derive(Debug, Clone, Default)]
+pub struct Valuation {
+    pub price: Option<f64>,
+    pub total_shares: Option<f64>,
+    pub pe: Option<f64>,
+}
+
 #[derive(Clone)]
 pub struct TencentProvider {
     http: HttpClient,
@@ -35,6 +42,34 @@ impl TencentProvider {
             .get_bytes(&url, &[("Referer", "https://finance.qq.com/")])
             .await?;
         parse_response(&bytes, market)
+    }
+
+    pub async fn valuation(&self, market: Market, symbol: &str) -> Result<Valuation> {
+        let query = tencent_symbol(market, symbol);
+        let url = format!("{}?q={}", self.base.trim_end_matches('/'), query);
+        let bytes = self
+            .http
+            .get_bytes(&url, &[("Referer", "https://finance.qq.com/")])
+            .await?;
+        let (text, _, _) = encoding_rs::GBK.decode(&bytes);
+        let line = text
+            .lines()
+            .find(|line| line.contains('='))
+            .ok_or_else(|| anyhow::anyhow!("腾讯估值响应为空"))?;
+        let value = line
+            .split_once('=')
+            .map(|(_, value)| value)
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .trim_matches('"');
+        let fields: Vec<&str> = value.split('~').collect();
+        Ok(Valuation {
+            price: parse_f64(fields.get(3)),
+            pe: parse_f64(fields.get(52)).filter(|value| *value > 0.0),
+            total_shares: parse_f64(fields.get(72)),
+        })
     }
 }
 

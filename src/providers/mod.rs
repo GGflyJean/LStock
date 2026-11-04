@@ -209,14 +209,17 @@ pub struct Providers {
 impl Providers {
     pub fn new(config: &ProviderConfig) -> Result<Self> {
         let http = HttpClient::new(config)?;
+        let tencent = tencent::TencentProvider::new(http.clone(), config.tencent_base.clone());
         Ok(Self {
-            tencent: tencent::TencentProvider::new(http.clone(), config.tencent_base.clone()),
+            tencent: tencent.clone(),
             sina: sina::SinaProvider::new(http.clone(), config.sina_base.clone()),
             eastmoney: eastmoney::EastmoneyProvider::new(
                 http.clone(),
                 config.eastmoney_base.clone(),
                 config.eastmoney_datacenter_base.clone(),
                 config.eastmoney_push2ex_base.clone(),
+                config.eastmoney_fallback_bases.clone(),
+                Some(tencent),
             ),
             yahoo: yahoo::YahooProvider::new(http.clone(), config.yahoo_base.clone()),
             stooq: stooq::StooqProvider::new(http.clone(), config.stooq_base.clone()),

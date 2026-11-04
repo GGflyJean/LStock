@@ -42,9 +42,15 @@
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: body.toString(),
       });
-      const data = await response.json().catch(function () { return {}; });
+      const text = await response.text();
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch (error) {
+        data = {};
+      }
       if (!response.ok) {
-        if (status) status.textContent = '刷新失败，请重试';
+        if (status) status.textContent = text || '刷新失败，请重试';
         button.disabled = false;
         button.textContent = original;
         return;

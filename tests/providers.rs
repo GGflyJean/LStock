@@ -15,6 +15,7 @@ fn provider_config(server: &MockServer) -> ProviderConfig {
         eastmoney_base: server.uri(),
         eastmoney_datacenter_base: server.uri(),
         eastmoney_push2ex_base: server.uri(),
+        eastmoney_fallback_bases: Vec::new(),
         yahoo_base: server.uri(),
         stooq_base: server.uri(),
         timeout_secs: 5,
@@ -32,6 +33,25 @@ fn tencent_payload(name: &str, symbol: &str, price: &str, prev: &str) -> Vec<u8>
     fields[31] = "1.0";
     fields[32] = "0.5";
     let line = format!("v_{symbol}=\"{}\";", fields.join("~"));
+    encoding_rs::GBK.encode(&line).0.to_vec()
+}
+
+fn tencent_valuation_payload() -> Vec<u8> {
+    let mut fields = vec![
+        "1",
+        "贵州茅台",
+        "600519",
+        "1446.44",
+        "1480.0",
+        "1470.0",
+        "1000",
+    ];
+    while fields.len() < 73 {
+        fields.push("0");
+    }
+    fields[52] = "21.04";
+    fields[72] = "1250081601";
+    let line = format!("v_sh600519=\"{}\"", fields.join("~"));
     encoding_rs::GBK.encode(&line).0.to_vec()
 }
 
@@ -150,6 +170,8 @@ async fn eastmoney_parses_sentiment_via_http() {
         server.uri(),
         server.uri(),
         server.uri(),
+        Vec::new(),
+        None,
     );
     let raw = provider.sentiment().await.unwrap();
     assert_eq!(raw.up, 4396);
@@ -265,6 +287,8 @@ async fn eastmoney_fundamentals_parse_finance_dividend_and_valuation() {
         server.uri(),
         server.uri(),
         server.uri(),
+        Vec::new(),
+        None,
     );
     let fundamentals = provider.fundamentals(Market::Cn, "sh600519").await.unwrap();
     assert!((fundamentals.revenue_growth.unwrap() - 1.82).abs() < 1e-6);
@@ -345,4 +369,92 @@ async fn sina_us_indices_are_supported() {
     assert_eq!(symbols, vec!["^DJI", "^IXIC", "^GSPC"]);
     assert!((indices[0].price - 51786.7188).abs() < 1e-6);
     assert!((indices[0].change + 197.26).abs() < 1e-6);
+}
+
+#[tokio::test]
+async fn eastmoney_push2_uses_fallback_hosts() {
+    let primary = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&primary)
+        .await;
+    let fallback = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/qt/ulist.np/get"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":{"diff":[{"f104":1849,"f105":440,"f106":68,"f6":953265155867.1}]}}"#,
+            "application/json",
+        ))
+        .mount(&fallback)
+        .await;
+    for (endpoint, body) in [
+        ("getTopicZTPool", r#"{"data":{"tc":10,"pool":[{"lbc":2}]}}"#),
+        ("getTopicDTPool", r#"{"data":{"tc":1}}"#),
+        ("getTopicZBPool", r#"{"data":{"tc":2}}"#),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(&fallback)
+            .await;
+    }
+    let config = provider_config(&fallback);
+    let provider = EastmoneyProvider::new(
+        HttpClient::new(&config).unwrap(),
+        primary.uri(),
+        primary.uri(),
+        fallback.uri(),
+        vec![fallback.uri()],
+        None,
+    );
+    let raw = provider.sentiment().await.unwrap();
+    assert_eq!(raw.up, 1849);
+}
+
+#[tokio::test]
+async fn eastmoney_uses_tencent_valuation_when_push2_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data/v1/get"))
+        .and(query_param("reportName", "RPT_F10_FINANCE_MAINFINADATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"result":{"data":[{"TOTALOPERATEREVETZ":1.82,"PARENTNETPROFITTZ":-0.25,"ROEJQ":24.47,"ROIC":23.27,"XSMLL_TB":-1.88,"FCFF_FORWARD":33869111226.9,"ZCFZL":11.9}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data/v1/get"))
+        .and(query_param("reportName", "RPT_SHAREBONUS_DET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"result":{"data":[{"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":280.2423,"REPORT_DATE":"2025-12-31 00:00:00","BASIC_EPS":65.66}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/qt/stock/get"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tencent_valuation_payload()))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let http = HttpClient::new(&config).unwrap();
+    let tencent = TencentProvider::new(http.clone(), server.uri());
+    let provider = EastmoneyProvider::new(
+        http,
+        server.uri(),
+        server.uri(),
+        server.uri(),
+        Vec::new(),
+        Some(tencent),
+    );
+    let fundamentals = provider.fundamentals(Market::Cn, "sh600519").await.unwrap();
+    assert!((fundamentals.valuation_percentile.unwrap() - 21.04).abs() < 1e-6);
+    assert!(fundamentals.dividend_yield.unwrap() > 0.0);
+    assert!(fundamentals.fcf_coverage.unwrap() > 0.0);
 }

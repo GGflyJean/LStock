@@ -12,6 +12,7 @@ pub struct ProviderConfig {
     pub eastmoney_base: String,
     pub eastmoney_datacenter_base: String,
     pub eastmoney_push2ex_base: String,
+    pub eastmoney_fallback_bases: Vec<String>,
     pub yahoo_base: String,
     pub stooq_base: String,
     pub timeout_secs: u64,
@@ -104,6 +105,15 @@ impl Config {
                 .unwrap_or_else(|| "https://datacenter-web.eastmoney.com".to_string()),
             eastmoney_push2ex_base: get("EASTMONEY_PUSH2EX_BASE_URL")
                 .unwrap_or_else(|| "https://push2ex.eastmoney.com".to_string()),
+            eastmoney_fallback_bases: get("EASTMONEY_FALLBACK_BASE_URLS")
+                .unwrap_or_else(|| {
+                    "https://push2delay.eastmoney.com,https://push2his.eastmoney.com".to_string()
+                })
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect(),
             yahoo_base: get("YAHOO_BASE_URL")
                 .unwrap_or_else(|| "https://query1.finance.yahoo.com".to_string()),
             stooq_base: get("STOOQ_BASE_URL").unwrap_or_else(|| "https://stooq.com".to_string()),

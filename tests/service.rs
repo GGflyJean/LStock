@@ -369,7 +369,7 @@ async fn request_many_runs_scopes_concurrently() {
         .respond_with(
             ResponseTemplate::new(200)
                 .set_body_bytes(index_bytes)
-                .set_delay(std::time::Duration::from_millis(400)),
+                .set_delay(std::time::Duration::from_millis(600)),
         )
         .mount(&server)
         .await;
@@ -387,7 +387,7 @@ async fn request_many_runs_scopes_concurrently() {
         .iter()
         .all(|outcome| matches!(outcome, RefreshOutcome::Success { .. })));
     assert!(
-        elapsed < std::time::Duration::from_millis(700),
+        elapsed < std::time::Duration::from_millis(1000),
         "elapsed={elapsed:?}"
     );
 }

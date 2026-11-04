@@ -183,7 +183,11 @@
 </footer>
 <footer class="corner right">
   <span id="utc-clock">{{ now_utc }} UTC</span>
+  {% if tab_supported %}
   <button id="refresh-btn" type="button" data-csrf="{{ csrf }}" data-market="{{ view }}" data-tab="{{ tab }}" data-board="{{ board }}">手动刷新</button>
+  {% else %}
+  <button id="refresh-btn" type="button" disabled title="该 tab 暂未开放，暂不支持刷新">暂未开放</button>
+  {% endif %}
   <span id="refresh-status"></span>
   <span class="next">下次 A股 {{ next_cn }} · 美股 {{ next_us }}</span>
 </footer>

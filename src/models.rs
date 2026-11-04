@@ -429,6 +429,8 @@ pub struct RankingPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Fundamentals {
+    #[serde(default)]
+    pub version: u32,
     pub symbol: String,
     pub market: Market,
     #[serde(default)]
@@ -610,6 +612,8 @@ pub struct UsSentimentRaw {
     pub source: String,
     pub as_of_utc: DateTime<Utc>,
 }
+
+pub const FUNDAMENTALS_VERSION: u32 = 1;
 
 pub fn normalize_symbol(market: Market, raw: &str) -> Result<String, String> {
     let raw = raw.trim();

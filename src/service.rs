@@ -409,7 +409,16 @@ impl RefreshService {
             };
             let _guard = lock.lock().await;
             match self.db.get_fundamentals(market, symbol) {
-                Ok(Some(_)) => continue,
+                Ok(Some(existing)) if existing.version >= crate::models::FUNDAMENTALS_VERSION => {
+                    continue;
+                }
+                Ok(Some(_)) => {
+                    tracing::info!(
+                        market = market.code(),
+                        symbol,
+                        "基本面缓存版本过旧，重新抓取"
+                    );
+                }
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(%error, market = market.code(), symbol, "读取基本面失败");
