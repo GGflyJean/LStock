@@ -1,0 +1,216 @@
+use l_stock::config::ProviderConfig;
+use l_stock::models::{Board, Market};
+use l_stock::providers::{
+    eastmoney::EastmoneyProvider, stooq::StooqProvider, tencent::TencentProvider,
+    yahoo::YahooProvider, CnSentimentProvider, FundamentalProvider, HttpClient, IndexProvider,
+    Providers, QuoteProvider,
+};
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn provider_config(server: &MockServer) -> ProviderConfig {
+    ProviderConfig {
+        tencent_base: server.uri(),
+        sina_base: server.uri(),
+        eastmoney_base: server.uri(),
+        yahoo_base: server.uri(),
+        stooq_base: server.uri(),
+        timeout_secs: 5,
+        retries: 0,
+        user_agent: "l_stock-test".to_string(),
+        proxy: None,
+    }
+}
+
+fn tencent_payload(name: &str, symbol: &str, price: &str, prev: &str) -> Vec<u8> {
+    let mut fields = vec!["1", name, symbol, price, prev, prev, "1000"];
+    while fields.len() < 33 {
+        fields.push("0");
+    }
+    fields[31] = "1.0";
+    fields[32] = "0.5";
+    let line = format!("v_{symbol}=\"{}\";", fields.join("~"));
+    encoding_rs::GBK.encode(&line).0.to_vec()
+}
+
+#[tokio::test]
+async fn tencent_parses_gbk_via_http() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tencent_payload(
+            "贵州茅台",
+            "sh600519",
+            "1500.0",
+            "1490.0",
+        )))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = TencentProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let quotes = provider
+        .quotes(Market::Cn, &["sh600519".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(quotes[0].name, "贵州茅台");
+    assert_eq!(quotes[0].symbol, "sh600519");
+}
+
+#[tokio::test]
+async fn tencent_failure_falls_back_to_sina() {
+    let tencent = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&tencent)
+        .await;
+    let sina = MockServer::start().await;
+    let body =
+        r#"var hq_str_sh600519="贵州茅台,1490.0,1490.0,1500.0,1510.0,1480.0,0,0,1000,1500000.0";"#;
+    let (bytes, _, _) = encoding_rs::GBK.encode(body);
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&sina)
+        .await;
+    let mut config = provider_config(&tencent);
+    config.sina_base = sina.uri();
+    let providers = Providers::new(&config).unwrap();
+    let payload = providers
+        .quotes(Market::Cn, &["sh600519".to_string()])
+        .await
+        .unwrap();
+    assert!(payload.source_note.contains("新浪"));
+    assert!(payload.source_note.contains("降级"));
+    let health = providers.health.snapshot();
+    assert!(health
+        .iter()
+        .any(|item| item.source == "tencent" && !item.ok));
+    assert!(health.iter().any(|item| item.source == "sina" && item.ok));
+}
+
+#[tokio::test]
+async fn proxy_configuration_is_applied() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tencent_payload(
+            "贵州茅台",
+            "sh600519",
+            "1500.0",
+            "1490.0",
+        )))
+        .mount(&server)
+        .await;
+    let mut config = provider_config(&server);
+    config.proxy = Some("http://127.0.0.1:1".to_string());
+    let provider = TencentProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let result = provider.quotes(Market::Cn, &["sh600519".to_string()]).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn eastmoney_parses_sentiment_via_http() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/qt/clist/get"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":{"diff":[{"f104":3000,"f105":1800,"f106":100,"f107":40,"f108":5,"f109":10,"f110":4,"f111":120000000000,"f112":3.0,"f113":0.2,"f114":50,"f115":10,"f116":500000000}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = EastmoneyProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let raw = provider.sentiment().await.unwrap();
+    assert_eq!(raw.up, 3000);
+    assert_eq!(raw.limit_up, 40);
+    assert_eq!(raw.main_net_inflow, Some(500000000.0));
+}
+
+#[tokio::test]
+async fn yahoo_marks_delayed_and_parses_indices() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex("/v8/finance/chart/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"chart":{"result":[{"meta":{"symbol":"AAPL","shortName":"Apple","regularMarketPrice":210.5,"chartPreviousClose":208.0,"regularMarketTime":1793520000}}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = YahooProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let quotes = provider
+        .quotes(Market::Us, &["AAPL".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(quotes[0].delay, l_stock::models::DelayKind::Delayed);
+    let indices = provider.indices(Market::Us).await.unwrap();
+    assert_eq!(indices.len(), 3);
+}
+
+#[tokio::test]
+async fn us_quote_falls_back_to_yahoo() {
+    let tencent = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&tencent)
+        .await;
+    let yahoo = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex("/v8/finance/chart/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"chart":{"result":[{"meta":{"symbol":"AAPL","shortName":"Apple","regularMarketPrice":210.5,"chartPreviousClose":208.0}}]}}"#,
+            "application/json",
+        ))
+        .mount(&yahoo)
+        .await;
+    let mut config = provider_config(&tencent);
+    config.yahoo_base = yahoo.uri();
+    let providers = Providers::new(&config).unwrap();
+    let payload = providers
+        .quotes(Market::Us, &["AAPL".to_string()])
+        .await
+        .unwrap();
+    assert!(payload.source_note.contains("Yahoo"));
+}
+
+#[tokio::test]
+async fn stooq_parses_csv_index_fallback() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/q/l/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "Symbol,Date,Time,Open,High,Low,Close,Volume\n^spx,2026-10-31,16:00:00,6800.5,6850,6790,6840,1000\n",
+            "text/csv",
+        ))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = StooqProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let indices = provider.indices(Market::Us).await.unwrap();
+    assert_eq!(indices.len(), 3);
+}
+
+#[tokio::test]
+async fn yahoo_fundamentals_are_persisted_shape() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path_regex("/v10/finance/quoteSummary/.*"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"quoteSummary":{"result":[{"financialData":{"revenueGrowth":{"raw":0.12},"returnOnEquity":{"raw":0.25},"freeCashflow":{"raw":1000},"debtToEquity":{"raw":40}},"summaryDetail":{"dividendYield":{"raw":0.02},"payoutRatio":{"raw":0.3},"trailingPE":{"raw":15}}}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = YahooProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let fundamentals = provider.fundamentals(Market::Us, "AAPL").await.unwrap();
+    assert!((fundamentals.revenue_growth.unwrap() - 12.0).abs() < 1e-6);
+    assert_eq!(fundamentals.market, Market::Us);
+    assert!(fundamentals
+        .missing_for(Board::Long)
+        .contains(&"ROIC(roic)".to_string()));
+}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}刷新状态 - LStock{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div class="brand">LStock</div>
+  <nav class="links">
+    <a href="/">返回盯盘</a>
+  </nav>
+</header>
+
+<main class="status">
+  <h1>刷新状态</h1>
+  <p class="muted">UTC 时钟 <span id="utc-clock">{{ now_utc }}</span> · 下次 A股 {{ next_cn }} · 美股 {{ next_us }}</p>
+
+  {% if !running.is_empty() %}
+  <p class="running">运行中：
+    {% for item in running %}<code>{{ item }}</code> {% endfor %}
+  </p>
+  {% endif %}
+
+  <h2>最近刷新</h2>
+  <table class="runs">
+    <thead><tr><th>时间</th><th>市场</th><th>范围</th><th>触发</th><th>状态</th><th>耗时</th><th>错误</th></tr></thead>
+    <tbody>
+    {% for run in runs %}
+      <tr>
+        <td>{{ run.time }}</td>
+        <td>{{ run.market }}</td>
+        <td>{{ run.scope }}</td>
+        <td>{{ run.trigger }}</td>
+        <td class="status-{{ run.status }}">{{ run.status }}</td>
+        <td>{{ run.duration }}</td>
+        <td class="error">{{ run.error }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>数据源健康</h2>
+  <table class="health">
+    <thead><tr><th>来源</th><th>状态</th><th>最近检查</th><th>错误</th></tr></thead>
+    <tbody>
+    {% for row in health %}
+      <tr>
+        <td>{{ row.source }}</td>
+        <td>{% if row.ok %}<span class="ok">正常</span>{% else %}<span class="bad">异常</span>{% endif %}</td>
+        <td>{{ row.checked }}</td>
+        <td class="error">{{ row.error }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>生效配置</h2>
+  <dl class="config">
+    {% for item in config %}
+    <dt>{{ item.key }}</dt><dd>{{ item.value }}</dd>
+    {% endfor %}
+  </dl>
+</main>
+{% endblock %}

@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}LStock 盯盘{% endblock %}
+{% block content %}
+<header class="topbar">
+  <div class="brand">LStock</div>
+  <nav class="segmented views">
+    {% for item in views %}
+    <a class="seg {% if item.active %}active{% endif %}" href="/?view={{ item.key }}&tab={{ tab }}{% if tab == "ranking" %}&board={{ board }}{% endif %}">{{ item.label }}</a>
+    {% endfor %}
+  </nav>
+  <nav class="links">
+    <a href="/status">刷新状态</a>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="link" type="submit">退出</button>
+    </form>
+  </nav>
+</header>
+
+<nav class="tabs">
+  {% for item in tabs %}
+  <a class="tab {% if item.active %}active{% endif %} {% if !item.supported %}pending{% endif %}" href="/?view={{ view }}&tab={{ item.key }}{% if item.key == "ranking" %}&board={{ board }}{% endif %}">{{ item.label }}</a>
+  {% endfor %}
+</nav>
+
+{% if tab == "ranking" %}
+<nav class="boards">
+  {% for item in boards %}
+  <a class="board {% if item.active %}active{% endif %}" href="/?view={{ view }}&tab=ranking&board={{ item.key }}">{{ item.label }}</a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<main class="panes panes-{{ view }}">
+  {% for pane in panes %}
+  <section class="pane">
+    <div class="pane-head">
+      <span class="market">{{ pane.market_label }}</span>
+      <span class="session">{{ pane.session }}</span>
+      {% if !pane.source_note.is_empty() %}<span class="source">{{ pane.source_note }}</span>{% endif %}
+      {% if pane.failed %}<span class="error">{{ pane.error }}</span>{% endif %}
+    </div>
+
+    {% if pane.show_placeholder %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+    {% else if pane.show_watch %}
+      <form class="add-watch" method="post" action="/watch/{{ pane.market }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="view" value="{{ view }}">
+        <input name="symbol" placeholder="代码，如 600519 / AAPL" autocomplete="off">
+        <input name="name" placeholder="名称（可选）" autocomplete="off">
+        <button type="submit">添加自选</button>
+      </form>
+      {% if !pane.quotes.is_empty() %}
+      <table class="quotes">
+        <thead><tr><th>标的</th><th>价格</th><th>涨跌</th><th>涨跌幅</th><th>成交额</th></tr></thead>
+        <tbody>
+        {% for quote in pane.quotes %}
+          <tr>
+            <td><span class="symbol">{{ quote.symbol_label() }}</span><span class="name">{{ quote.name }}</span></td>
+            <td>{{ quote.price_text() }}</td>
+            <td class="{{ quote.change_class() }}">{{ quote.change_text() }}</td>
+            <td class="{{ quote.change_class() }}">{{ quote.pct_text() }}</td>
+            <td>{{ quote.volume_text() }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+      {% if !pane.watch_items.is_empty() %}
+      <div class="watch-list">
+        {% for item in pane.watch_items %}
+        <form method="post" action="/watch/{{ pane.market }}/delete/{{ item.id }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="view" value="{{ view }}">
+          <button class="link" type="submit">移除 {{ item.name }} ({{ item.symbol }})</button>
+        </form>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% else if pane.show_index %}
+      {% if !pane.indices.is_empty() %}
+      <div class="cards">
+        {% for quote in pane.indices %}
+        <div class="card">
+          <div class="card-name">{{ quote.name }}</div>
+          <div class="card-code">{{ quote.symbol_label() }}</div>
+          <div class="card-price">{{ quote.price_text() }}</div>
+          <div class="card-change {{ quote.change_class() }}">{{ quote.pct_text() }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+    {% else if pane.show_sentiment %}
+      {% if !pane.temperature.is_empty() %}
+      <div class="temperature {{ pane.band_class }}">
+        <span class="temp-value">{{ pane.temperature }}</span>
+        <span class="temp-band">{{ pane.band }}</span>
+        <span class="temp-label">情绪温度</span>
+      </div>
+      <div class="metrics">
+        {% for metric in pane.metrics %}
+        <div class="metric">
+          <div class="metric-label">{{ metric.label }}</div>
+          <div class="metric-value">{{ metric.value }}</div>
+          {% if !metric.note.is_empty() %}<div class="metric-note">{{ metric.note }}</div>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% if !pane.missing_text.is_empty() %}<div class="missing">缺失指标：{{ pane.missing_text }}</div>{% endif %}
+      {% else %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+    {% else if pane.show_ranking %}
+      {% if !pane.ranking_items.is_empty() %}
+      <div class="rank-meta">
+        <span>{{ pane.board_label }}</span>
+        <span>候选池 {{ pane.ranking_pool_size }}</span>
+        <span class="weights-summary">{{ pane.ranking_weights }}</span>
+      </div>
+      <table class="ranking">
+        <thead><tr><th>#</th><th>标的</th><th>综合分</th><th>因子拆解</th></tr></thead>
+        <tbody>
+        {% for item in pane.ranking_items %}
+          <tr>
+            <td class="rank">{{ item.rank }}</td>
+            <td><span class="symbol">{{ item.name }}</span><span class="name">{{ item.symbol }}</span></td>
+            <td class="score">{{ item.score_text() }}</td>
+            <td class="factors">
+              {% for factor in item.factors %}
+              <span class="factor" title="原始值 {{ factor.raw_text() }} · z {{ factor.z_text() }} · 权重 {{ factor.weight_text() }}">{{ factor.label }} <b>{{ factor.contribution_text() }}</b></span>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else if pane.ranking_insufficient.is_empty() %}
+      <div class="placeholder">{{ pane.placeholder }}</div>
+      {% endif %}
+      {% if !pane.ranking_insufficient.is_empty() %}
+      <details class="insufficient">
+        <summary>数据不足 {{ pane.ranking_insufficient.len() }} 项</summary>
+        <ul>
+          {% for item in pane.ranking_insufficient %}
+          <li>{{ item.name }} ({{ item.symbol }})：{{ item.missing_text() }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    {% endif %}
+  </section>
+  {% endfor %}
+</main>
+
+{% if tab == "ranking" %}
+<details class="weights">
+  <summary>调整因子权重（{{ board }}，保存后下次刷新生效）</summary>
+  <form method="post" action="/weights/{{ board }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="view" value="{{ view }}">
+    <div class="weight-grid">
+      {% for field in weights %}
+      <label>{{ field.label }} <input type="number" name="{{ field.key }}" value="{{ field.value }}" min="0" max="100" step="1"> %</label>
+      {% endfor %}
+    </div>
+    <button type="submit">保存权重</button>
+  </form>
+</details>
+{% endif %}
+
+<footer class="corner left">
+  {% for pane in panes %}
+  <span class="freshness{% if pane.failed %} failed{% else if pane.stale %} stale{% endif %}">
+    {{ pane.market_label }} 数据时效 {{ pane.as_of_local }} / {{ pane.as_of_utc }}（{{ pane.age }}）
+    {% if pane.failed %} · 上次刷新失败{% endif %}{% if pane.stale %} · 已过期{% endif %}
+  </span>
+  {% endfor %}
+</footer>
+<footer class="corner right">
+  <span id="utc-clock">{{ now_utc }} UTC</span>
+  <button id="refresh-btn" type="button" data-csrf="{{ csrf }}" data-market="{{ view }}" data-tab="{{ tab }}" data-board="{{ board }}">手动刷新</button>
+  <span id="refresh-status"></span>
+  <span class="next">下次 A股 {{ next_cn }} · 美股 {{ next_us }}</span>
+</footer>
+{% endblock %}

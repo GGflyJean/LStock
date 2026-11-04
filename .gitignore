@@ -1,0 +1,6 @@
+/target
+/data
+.env
+*.tar
+*.tar.gz
+.DS_Store

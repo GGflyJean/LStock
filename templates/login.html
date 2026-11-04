@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}登录 - LStock{% endblock %}
+{% block content %}
+<main class="login">
+  <h1>LStock</h1>
+  <p class="muted">A股 / 美股盯盘快照</p>
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label>用户名
+      <input name="username" autocomplete="username" autofocus>
+    </label>
+    <label>密码
+      <input type="password" name="password" autocomplete="current-password">
+    </label>
+    {% if !error.is_empty() %}<p class="error">{{ error }}</p>{% endif %}
+    <button type="submit">登录</button>
+  </form>
+</main>
+{% endblock %}
