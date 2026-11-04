@@ -35,7 +35,8 @@
 | `PROVIDER_USER_AGENT` | 否 | `l_stock/0.1 (+self-hosted)` | 行情请求 UA |
 | `TENCENT_BASE_URL` | 否 | `https://qt.gtimg.cn` | 腾讯行情源 |
 | `SINA_BASE_URL` | 否 | `https://hq.sinajs.cn` | 新浪行情源 |
-| `EASTMONEY_BASE_URL` | 否 | `https://push2.eastmoney.com` | 东财情绪源 |
+| `EASTMONEY_BASE_URL` | 否 | `https://push2.eastmoney.com` | 东财情绪/估值源 |
+| `EASTMONEY_DATACENTER_BASE_URL` | 否 | `https://datacenter-web.eastmoney.com` | 东财 F10 财务/分红数据 |
 | `YAHOO_BASE_URL` | 否 | `https://query1.finance.yahoo.com` | Yahoo 行情 / 指数 / 基本面 |
 | `STOOQ_BASE_URL` | 否 | `https://stooq.com` | Stooq 美股指数备源 |
 
@@ -82,6 +83,7 @@ DATA_DIR=./data AUTH_USER=trader AUTH_PASSWORD_HASH='<hash>' \
 | 美股 | 自选报价 | 腾讯 → 新浪 → Yahoo | 腾讯/新浪延迟，Yahoo 延迟 |
 | 美股 | 指数 | 腾讯 → 新浪 → Stooq → Yahoo | 腾讯/新浪延迟，Stooq 日频 |
 | 美股 | 情绪 | 腾讯 VIX → Yahoo（VIX / 10Y / DXY） | 延迟；缺失指标明确标注 |
+| A股 | 基本面 / 分红 | 东方财富 F10 | 报告期数据 |
 | 美股 | 基本面 | Yahoo quoteSummary | 日频 |
 
 所有请求统一设置超时、有限重试、UA 与可选代理；主源失败会自动降级并在页面标注实际来源。Yahoo 在部分网络会返回 403/429、Stooq 可能返回 404，因此美股报价与指数优先使用腾讯/新浪，Yahoo/Stooq 仅作为兜底。替换数据源只需改 `*_BASE_URL` 或在 `src/providers/` 增加实现，页面与榜单不感知具体来源。

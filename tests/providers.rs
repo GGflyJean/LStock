@@ -5,7 +5,7 @@ use l_stock::providers::{
     tencent::TencentProvider, yahoo::YahooProvider, CnSentimentProvider, FundamentalProvider,
     HttpClient, IndexProvider, Providers, QuoteProvider,
 };
-use wiremock::matchers::{method, path, path_regex};
+use wiremock::matchers::{method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn provider_config(server: &MockServer) -> ProviderConfig {
@@ -13,6 +13,7 @@ fn provider_config(server: &MockServer) -> ProviderConfig {
         tencent_base: server.uri(),
         sina_base: server.uri(),
         eastmoney_base: server.uri(),
+        eastmoney_datacenter_base: server.uri(),
         yahoo_base: server.uri(),
         stooq_base: server.uri(),
         timeout_secs: 5,
@@ -121,7 +122,11 @@ async fn eastmoney_parses_sentiment_via_http() {
         .mount(&server)
         .await;
     let config = provider_config(&server);
-    let provider = EastmoneyProvider::new(HttpClient::new(&config).unwrap(), server.uri());
+    let provider = EastmoneyProvider::new(
+        HttpClient::new(&config).unwrap(),
+        server.uri(),
+        server.uri(),
+    );
     let raw = provider.sentiment().await.unwrap();
     assert_eq!(raw.up, 3000);
     assert_eq!(raw.limit_up, 40);
@@ -192,6 +197,53 @@ async fn stooq_parses_csv_index_fallback() {
     let provider = StooqProvider::new(HttpClient::new(&config).unwrap(), server.uri());
     let indices = provider.indices(Market::Us).await.unwrap();
     assert_eq!(indices.len(), 3);
+}
+
+#[tokio::test]
+async fn eastmoney_fundamentals_parse_finance_dividend_and_valuation() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/data/v1/get"))
+        .and(query_param("reportName", "RPT_F10_FINANCE_MAINFINADATA"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"result":{"data":[{"TOTALOPERATEREVETZ":1.82,"PARENTNETPROFITTZ":-0.25,"ROEJQ":24.47,"ROIC":23.27,"XSMLL_TB":-1.88,"FCFF_FORWARD":33869111226.9,"ZCFZL":11.9}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/data/v1/get"))
+        .and(query_param("reportName", "RPT_SHAREBONUS_DET"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"result":{"data":[
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":280.2423,"REPORT_DATE":"2025-12-31 00:00:00","BASIC_EPS":65.66},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":239.57,"REPORT_DATE":"2025-09-30 00:00:00","BASIC_EPS":51.53},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":276.73,"REPORT_DATE":"2024-12-31 00:00:00","BASIC_EPS":68.64},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":238.82,"REPORT_DATE":"2024-09-30 00:00:00","BASIC_EPS":48.42}
+            ]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/qt/stock/get"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":{"f43":1446.44,"f84":1250081601.0,"f162":21.04}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    let config = provider_config(&server);
+    let provider = EastmoneyProvider::new(
+        HttpClient::new(&config).unwrap(),
+        server.uri(),
+        server.uri(),
+    );
+    let fundamentals = provider.fundamentals(Market::Cn, "sh600519").await.unwrap();
+    assert!((fundamentals.revenue_growth.unwrap() - 1.82).abs() < 1e-6);
+    assert!((fundamentals.roic.unwrap() - 23.27).abs() < 1e-6);
+    assert!(fundamentals.dividend_yield.unwrap() > 3.0);
+    assert!(fundamentals.dividend_years.unwrap() >= 2.0);
 }
 
 #[tokio::test]

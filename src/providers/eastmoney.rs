@@ -1,21 +1,28 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::models::CnSentimentRaw;
+use crate::models::{CnSentimentRaw, Fundamentals, Market};
 
-use super::{CnSentimentProvider, HttpClient};
+use super::{CnSentimentProvider, FundamentalProvider, HttpClient};
 
 #[derive(Clone)]
 pub struct EastmoneyProvider {
     http: HttpClient,
     base: String,
+    datacenter_base: String,
 }
 
 impl EastmoneyProvider {
-    pub fn new(http: HttpClient, base: String) -> Self {
-        Self { http, base }
+    pub fn new(http: HttpClient, base: String, datacenter_base: String) -> Self {
+        Self {
+            http,
+            base,
+            datacenter_base,
+        }
     }
 }
 
@@ -36,6 +43,65 @@ impl CnSentimentProvider for EastmoneyProvider {
             .await
             .with_context(|| "东方财富情绪请求失败")?;
         parse_sentiment(&json)
+    }
+}
+
+#[async_trait]
+impl FundamentalProvider for EastmoneyProvider {
+    fn name(&self) -> &'static str {
+        "东方财富 F10"
+    }
+
+    async fn fundamentals(&self, market: Market, symbol: &str) -> Result<Fundamentals> {
+        if market != Market::Cn {
+            return Err(anyhow::anyhow!("东方财富 F10 仅支持 A股"));
+        }
+        let secu = secu_code(symbol)?;
+        let digits = symbol
+            .strip_prefix("sh")
+            .or_else(|| symbol.strip_prefix("sz"))
+            .unwrap_or(symbol);
+        let main_url = format!(
+            "{}/api/data/v1/get?reportName=RPT_F10_FINANCE_MAINFINADATA&columns=ALL&filter=(SECUCODE%3D%22{secu}%22)&pageNumber=1&pageSize=2&sortColumns=REPORT_DATE&sortTypes=-1",
+            self.datacenter_base.trim_end_matches('/')
+        );
+        let main = self
+            .http
+            .get_json(
+                &main_url,
+                &[("Referer", "https://emweb.securities.eastmoney.com/")],
+            )
+            .await
+            .with_context(|| format!("东方财富 F10 财务数据失败: {symbol}"))?;
+
+        let dividend_url = format!(
+            "{}/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=ALL&filter=(SECURITY_CODE%3D%22{digits}%22)&pageNumber=1&pageSize=50&sortColumns=REPORT_DATE&sortTypes=-1",
+            self.datacenter_base.trim_end_matches('/')
+        );
+        let dividends = self
+            .http
+            .get_json(&dividend_url, &[("Referer", "https://emweb.securities.eastmoney.com/")])
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(symbol, error = %format!("{error:#}"), "分红数据抓取失败，股息字段留空");
+                serde_json::json!({})
+            });
+
+        let stock_url = format!(
+            "{}/api/qt/stock/get?secid={}&fltt=2&fields=f43,f84,f162",
+            self.base.trim_end_matches('/'),
+            secid(symbol)?
+        );
+        let stock = self
+            .http
+            .get_json(&stock_url, &[("Referer", "https://quote.eastmoney.com/")])
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(symbol, error = %format!("{error:#}"), "估值/股本数据抓取失败");
+                serde_json::json!({})
+            });
+
+        parse_fundamentals(&main, &dividends, &stock, symbol, market)
     }
 }
 
@@ -87,6 +153,171 @@ pub fn parse_sentiment(json: &Value) -> Result<CnSentimentRaw> {
     })
 }
 
+pub fn parse_fundamentals(
+    main: &Value,
+    dividends: &Value,
+    stock: &Value,
+    symbol: &str,
+    market: Market,
+) -> Result<Fundamentals> {
+    let row = main
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(|data| data.as_array())
+        .and_then(|rows| rows.first())
+        .ok_or_else(|| anyhow::anyhow!("东方财富财务数据为空"))?;
+
+    let revenue_growth = number(row, "TOTALOPERATEREVETZ");
+    let eps_growth = number(row, "EPSJBTZ")
+        .filter(|value| value.abs() > 1e-9)
+        .or_else(|| number(row, "PARENTNETPROFITTZ"));
+    let roe = number(row, "ROEJQ");
+    let roic = number(row, "ROIC");
+    let gross_margin_trend = number(row, "XSMLL_TB");
+    let free_cash_flow = number(row, "FCFF_FORWARD")
+        .or_else(|| number(row, "FCFF_BACK"))
+        .or_else(|| number(row, "NETCASH_OPERATE_PK"));
+    let debt_to_equity = number(row, "ZCFZL").and_then(|ratio| {
+        if ratio > 0.0 && ratio < 100.0 {
+            Some(ratio / (100.0 - ratio))
+        } else {
+            None
+        }
+    });
+
+    let stock_data = stock.get("data");
+    let price = stock_data.and_then(|data| number(data, "f43"));
+    let total_shares = stock_data.and_then(|data| number(data, "f84"));
+    let pe = stock_data
+        .and_then(|data| number(data, "f162"))
+        .filter(|value| *value > 0.0);
+
+    let mut yearly: BTreeMap<i32, f64> = BTreeMap::new();
+    let mut yearly_eps: BTreeMap<i32, f64> = BTreeMap::new();
+    if let Some(rows) = dividends
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(|data| data.as_array())
+    {
+        for item in rows {
+            let progress = item
+                .get("ASSIGN_PROGRESS")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if progress != "实施分配" {
+                continue;
+            }
+            let Some(bonus) = number(item, "PRETAX_BONUS_RMB") else {
+                continue;
+            };
+            let dps = bonus / 10.0;
+            if !dps.is_finite() || dps <= 0.0 {
+                continue;
+            }
+            let Some(date) = item.get("REPORT_DATE").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(year) = date.get(0..4).unwrap_or_default().parse::<i32>() else {
+                continue;
+            };
+            *yearly.entry(year).or_insert(0.0) += dps;
+            if let Some(eps) = number(item, "BASIC_EPS").filter(|value| *value > 0.0) {
+                yearly_eps
+                    .entry(year)
+                    .and_modify(|value| *value = value.max(eps))
+                    .or_insert(eps);
+            }
+        }
+    }
+
+    let latest_year = yearly.keys().next_back().copied();
+    let latest_total = latest_year.and_then(|year| yearly.get(&year).copied());
+    let previous_total = latest_year
+        .map(|year| year - 1)
+        .and_then(|year| yearly.get(&year).copied());
+
+    let dividend_yield = match (latest_total, price) {
+        (Some(dps), Some(price)) if price > 0.0 => Some(dps / price * 100.0),
+        _ => None,
+    };
+    let payout_ratio = match (
+        latest_total,
+        latest_year.and_then(|year| yearly_eps.get(&year).copied()),
+    ) {
+        (Some(dps), Some(eps)) if eps > 0.0 => Some(dps / eps * 100.0),
+        _ => None,
+    };
+    let dividend_years = latest_year.map(|latest| {
+        let mut count = 0;
+        let mut year = latest;
+        while count < 30 && yearly.contains_key(&year) {
+            count += 1;
+            year -= 1;
+        }
+        count as f64
+    });
+    let dividend_growth = match (latest_total, previous_total) {
+        (Some(latest), Some(previous)) if previous > 0.0 => {
+            Some((latest - previous) / previous * 100.0)
+        }
+        _ => None,
+    };
+    let fcf_coverage = match (free_cash_flow, latest_total, total_shares) {
+        (Some(fcf), Some(dps), Some(shares)) if dps > 0.0 && shares > 0.0 => {
+            Some(fcf / (dps * shares))
+        }
+        _ => None,
+    };
+
+    Ok(Fundamentals {
+        symbol: symbol.to_string(),
+        market,
+        revenue_growth,
+        eps_growth,
+        roe,
+        roic,
+        gross_margin_trend,
+        free_cash_flow,
+        debt_to_equity,
+        valuation_percentile: pe,
+        dividend_yield,
+        payout_ratio,
+        dividend_years,
+        dividend_growth,
+        fcf_coverage,
+    })
+}
+
+fn secu_code(symbol: &str) -> Result<String> {
+    if let Some(digits) = symbol.strip_prefix("sh") {
+        Ok(format!("{digits}.SH"))
+    } else if let Some(digits) = symbol.strip_prefix("sz") {
+        Ok(format!("{digits}.SZ"))
+    } else {
+        Err(anyhow::anyhow!("无法识别的 A股代码 {symbol}"))
+    }
+}
+
+fn secid(symbol: &str) -> Result<String> {
+    if let Some(digits) = symbol.strip_prefix("sh") {
+        Ok(format!("1.{digits}"))
+    } else if let Some(digits) = symbol.strip_prefix("sz") {
+        Ok(format!("0.{digits}"))
+    } else {
+        Err(anyhow::anyhow!("无法识别的 A股代码 {symbol}"))
+    }
+}
+
+fn number(value: &Value, key: &str) -> Option<f64> {
+    value
+        .get(key)
+        .and_then(|item| {
+            item.as_f64()
+                .or_else(|| item.as_str().and_then(|text| text.parse::<f64>().ok()))
+        })
+        .filter(|value| value.is_finite())
+}
+
 fn pick_value<'a>(item: &'a Value, code: &str, name: &str) -> Option<&'a Value> {
     item.get(code).or_else(|| item.get(name))
 }
@@ -129,5 +360,34 @@ mod tests {
     fn missing_data_is_error() {
         let json: Value = serde_json::from_str(r#"{"data":{}}"#).unwrap();
         assert!(parse_sentiment(&json).is_err());
+    }
+
+    #[test]
+    fn parses_fundamentals_and_dividends() {
+        let main: Value = serde_json::from_str(
+            r#"{"result":{"data":[{"TOTALOPERATEREVETZ":1.82,"PARENTNETPROFITTZ":-0.25,"ROEJQ":24.47,"ROIC":23.27,"XSMLL_TB":-1.88,"FCFF_FORWARD":33869111226.9,"ZCFZL":11.9}]}}"#,
+        )
+        .unwrap();
+        let dividends: Value = serde_json::from_str(
+            r#"{"result":{"data":[
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":280.2423,"REPORT_DATE":"2025-12-31 00:00:00","BASIC_EPS":65.66},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":239.57,"REPORT_DATE":"2025-09-30 00:00:00","BASIC_EPS":51.53},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":276.73,"REPORT_DATE":"2024-12-31 00:00:00","BASIC_EPS":68.64},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":238.82,"REPORT_DATE":"2024-09-30 00:00:00","BASIC_EPS":48.42},
+                {"ASSIGN_PROGRESS":"实施分配","PRETAX_BONUS_RMB":300.0,"REPORT_DATE":"2023-12-31 00:00:00","BASIC_EPS":60.0}
+            ]}}"#,
+        )
+        .unwrap();
+        let stock: Value =
+            serde_json::from_str(r#"{"data":{"f43":1446.44,"f84":1250081601.0,"f162":21.04}}"#)
+                .unwrap();
+        let fundamentals =
+            parse_fundamentals(&main, &dividends, &stock, "sh600519", Market::Cn).unwrap();
+        assert!((fundamentals.revenue_growth.unwrap() - 1.82).abs() < 1e-6);
+        assert!((fundamentals.roic.unwrap() - 23.27).abs() < 1e-6);
+        assert!((fundamentals.debt_to_equity.unwrap() - 0.135).abs() < 0.01);
+        assert!(fundamentals.dividend_yield.unwrap() > 3.0);
+        assert!(fundamentals.dividend_years.unwrap() >= 3.0);
+        assert!(fundamentals.payout_ratio.unwrap() > 40.0);
     }
 }

@@ -215,6 +215,7 @@ impl Providers {
             eastmoney: eastmoney::EastmoneyProvider::new(
                 http.clone(),
                 config.eastmoney_base.clone(),
+                config.eastmoney_datacenter_base.clone(),
             ),
             yahoo: yahoo::YahooProvider::new(http.clone(), config.yahoo_base.clone()),
             stooq: stooq::StooqProvider::new(http.clone(), config.stooq_base.clone()),
@@ -460,6 +461,31 @@ impl Providers {
     pub async fn fundamentals(&self, market: Market, symbol: &str) -> Result<Fundamentals> {
         let started = Instant::now();
         tracing::debug!(market = market.code(), symbol, "抓取基本面");
+        if market == Market::Cn {
+            match self.eastmoney.fundamentals(market, symbol).await {
+                Ok(value) => {
+                    tracing::info!(
+                        market = market.code(),
+                        symbol,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "A股基本面抓取成功（东方财富 F10）"
+                    );
+                    self.health.record_ok("eastmoney-fundamentals");
+                    return Ok(value);
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        market = market.code(),
+                        symbol,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %format!("{error:#}"),
+                        "东方财富基本面失败，尝试 Yahoo"
+                    );
+                    self.health
+                        .record_err("eastmoney-fundamentals", &format!("{error:#}"));
+                }
+            }
+        }
         match self.yahoo.fundamentals(market, symbol).await {
             Ok(value) => {
                 tracing::debug!(
