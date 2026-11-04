@@ -520,6 +520,7 @@ pub struct Snapshot {
 pub enum Trigger {
     Scheduled,
     Manual,
+    Startup,
 }
 
 impl Trigger {
@@ -527,6 +528,7 @@ impl Trigger {
         match self {
             Trigger::Scheduled => "scheduled",
             Trigger::Manual => "manual",
+            Trigger::Startup => "startup",
         }
     }
 }
@@ -588,6 +590,8 @@ pub struct CnSentimentRaw {
     pub new_low: i64,
     #[serde(default)]
     pub main_net_inflow: Option<f64>,
+    #[serde(default)]
+    pub missing: Vec<String>,
     pub source: String,
     pub as_of_utc: DateTime<Utc>,
 }

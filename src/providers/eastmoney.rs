@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use serde_json::Value;
 
+use crate::market::is_trading_day;
 use crate::models::{CnSentimentRaw, Fundamentals, Market};
 
 use super::{CnSentimentProvider, FundamentalProvider, HttpClient};
@@ -14,14 +15,21 @@ pub struct EastmoneyProvider {
     http: HttpClient,
     base: String,
     datacenter_base: String,
+    push2ex_base: String,
 }
 
 impl EastmoneyProvider {
-    pub fn new(http: HttpClient, base: String, datacenter_base: String) -> Self {
+    pub fn new(
+        http: HttpClient,
+        base: String,
+        datacenter_base: String,
+        push2ex_base: String,
+    ) -> Self {
         Self {
             http,
             base,
             datacenter_base,
+            push2ex_base,
         }
     }
 }
@@ -33,16 +41,48 @@ impl CnSentimentProvider for EastmoneyProvider {
     }
 
     async fn sentiment(&self) -> Result<CnSentimentRaw> {
-        let url = format!(
-            "{}/api/qt/clist/get?pn=1&pz=1&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f104,f105,f106,f107,f108,f109,f110,f111,f112,f113,f114,f115,f116",
+        let tz = Market::Cn.tz();
+        let mut date = Utc::now().with_timezone(&tz).date_naive();
+        for _ in 0..10 {
+            if is_trading_day(Market::Cn, date) {
+                break;
+            }
+            date -= Duration::days(1);
+        }
+        let date_str = date.format("%Y%m%d").to_string();
+        let breadth_url = format!(
+            "{}/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399106&fields=f12,f14,f104,f105,f106,f6",
             self.base.trim_end_matches('/')
         );
-        let json = self
+        let breadth = self
             .http
-            .get_json(&url, &[("Referer", "https://quote.eastmoney.com/")])
+            .get_json(&breadth_url, &[("Referer", "https://quote.eastmoney.com/")])
             .await
-            .with_context(|| "东方财富情绪请求失败")?;
-        parse_sentiment(&json)
+            .with_context(|| "东方财富涨跌家数请求失败")?;
+
+        let pool = |endpoint: &str, pagesize: i64| {
+            format!(
+                "{}/{}?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize={pagesize}&sort=fbt:asc&date={date_str}",
+                self.push2ex_base.trim_end_matches('/'),
+                endpoint
+            )
+        };
+        let zt = self
+            .http
+            .get_json(&pool("getTopicZTPool", 300), &[])
+            .await
+            .ok();
+        let dt = self
+            .http
+            .get_json(&pool("getTopicDTPool", 1), &[])
+            .await
+            .ok();
+        let zb = self
+            .http
+            .get_json(&pool("getTopicZBPool", 1), &[])
+            .await
+            .ok();
+        parse_sentiment(&breadth, zt.as_ref(), dt.as_ref(), zb.as_ref())
     }
 }
 
@@ -105,49 +145,84 @@ impl FundamentalProvider for EastmoneyProvider {
     }
 }
 
-pub fn parse_sentiment(json: &Value) -> Result<CnSentimentRaw> {
-    let data = json
+pub fn parse_sentiment(
+    breadth: &Value,
+    zt: Option<&Value>,
+    dt: Option<&Value>,
+    zb: Option<&Value>,
+) -> Result<CnSentimentRaw> {
+    let rows = breadth
         .get("data")
-        .ok_or_else(|| anyhow::anyhow!("响应缺少 data"))?;
-    let item = data
-        .get("diff")
+        .and_then(|data| data.get("diff"))
         .and_then(|diff| diff.as_array())
-        .and_then(|items| items.first())
-        .or_else(|| data.get("summary"))
         .ok_or_else(|| anyhow::anyhow!("响应缺少涨跌统计"))?;
-
-    let up = pick_i64(item, "f104", "up").unwrap_or(0);
-    let down = pick_i64(item, "f105", "down").unwrap_or(0);
-    let flat = pick_i64(item, "f106", "flat").unwrap_or(0);
-    let limit_up = pick_i64(item, "f107", "limit_up").unwrap_or(0);
-    let limit_down = pick_i64(item, "f108", "limit_down").unwrap_or(0);
-    let broken_boards = pick_i64(item, "f109", "broken_boards").unwrap_or(0);
-    let max_streak = pick_i64(item, "f110", "max_streak").unwrap_or(0);
-    let amount = pick_f64(item, "f111", "amount").unwrap_or(0.0);
-    let amount_change_pct = pick_f64(item, "f112", "amount_change_pct").unwrap_or(0.0);
-    let median_change = pick_f64(item, "f113", "median_change").unwrap_or(0.0);
-    let new_high = pick_i64(item, "f114", "new_high").unwrap_or(0);
-    let new_low = pick_i64(item, "f115", "new_low").unwrap_or(0);
-    let main_net_inflow = pick_f64(item, "f116", "main_net_inflow");
-
+    let mut up = 0;
+    let mut down = 0;
+    let mut flat = 0;
+    let mut amount = 0.0;
+    for row in rows {
+        up += number(row, "f104").unwrap_or(0.0) as i64;
+        down += number(row, "f105").unwrap_or(0.0) as i64;
+        flat += number(row, "f106").unwrap_or(0.0) as i64;
+        amount += number(row, "f6").unwrap_or(0.0);
+    }
     if up + down + flat == 0 {
         return Err(anyhow::anyhow!("涨跌家数全为 0，数据可能不可用"));
+    }
+
+    let mut missing = vec![
+        "量能变化".to_string(),
+        "涨跌中位数".to_string(),
+        "新高新低".to_string(),
+    ];
+    let limit_up = zt
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get("tc"))
+        .and_then(Value::as_i64);
+    let limit_down = dt
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get("tc"))
+        .and_then(Value::as_i64);
+    let broken_boards = zb
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get("tc"))
+        .and_then(Value::as_i64);
+    let max_streak = zt
+        .and_then(|value| value.get("data"))
+        .and_then(|data| data.get("pool"))
+        .and_then(Value::as_array)
+        .map(|pool| {
+            pool.iter()
+                .filter_map(|item| item.get("lbc").and_then(Value::as_i64))
+                .max()
+                .unwrap_or(0)
+        });
+
+    if limit_up.is_none() || limit_down.is_none() {
+        missing.push("涨停跌停".to_string());
+    }
+    if broken_boards.is_none() {
+        missing.push("炸板率".to_string());
+    }
+    if max_streak.is_none() {
+        missing.push("连板高度".to_string());
     }
 
     Ok(CnSentimentRaw {
         up,
         down,
         flat,
-        limit_up,
-        limit_down,
-        broken_boards,
-        max_streak,
+        limit_up: limit_up.unwrap_or(0),
+        limit_down: limit_down.unwrap_or(0),
+        broken_boards: broken_boards.unwrap_or(0),
+        max_streak: max_streak.unwrap_or(0),
         amount,
-        amount_change_pct,
-        median_change,
-        new_high,
-        new_low,
-        main_net_inflow,
+        amount_change_pct: 0.0,
+        median_change: 0.0,
+        new_high: 0,
+        new_low: 0,
+        main_net_inflow: None,
+        missing,
         source: "东方财富".to_string(),
         as_of_utc: Utc::now(),
     })
@@ -318,48 +393,37 @@ fn number(value: &Value, key: &str) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-fn pick_value<'a>(item: &'a Value, code: &str, name: &str) -> Option<&'a Value> {
-    item.get(code).or_else(|| item.get(name))
-}
-
-fn pick_i64(item: &Value, code: &str, name: &str) -> Option<i64> {
-    let value = pick_value(item, code, name)?;
-    value
-        .as_i64()
-        .or_else(|| value.as_f64().map(|value| value as i64))
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-}
-
-fn pick_f64(item: &Value, code: &str, name: &str) -> Option<f64> {
-    let value = pick_value(item, code, name)?;
-    value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn parses_breadth_and_limit_fields() {
-        let json: Value = serde_json::from_str(
-            r#"{"data":{"diff":[{"f104":3120,"f105":1890,"f106":120,"f107":58,"f108":6,"f109":22,"f110":5,"f111":142000000000,"f112":8.0,"f113":0.35,"f114":80,"f115":12,"f116":-1200000000}]}}"#,
+        let breadth: Value = serde_json::from_str(
+            r#"{"data":{"diff":[{"f104":1849,"f105":440,"f106":68,"f6":953265155867.1},{"f104":2547,"f105":331,"f106":60,"f6":1084426578752.9}]}}"#,
         )
         .unwrap();
-        let raw = parse_sentiment(&json).expect("parse");
-        assert_eq!(raw.up, 3120);
-        assert_eq!(raw.down, 1890);
-        assert_eq!(raw.limit_up, 58);
-        assert_eq!(raw.limit_down, 6);
+        let zt: Value =
+            serde_json::from_str(r#"{"data":{"tc":118,"pool":[{"lbc":1},{"lbc":5},{"lbc":3}]}}"#)
+                .unwrap();
+        let dt: Value = serde_json::from_str(r#"{"data":{"tc":10}}"#).unwrap();
+        let zb: Value = serde_json::from_str(r#"{"data":{"tc":33}}"#).unwrap();
+        let raw = parse_sentiment(&breadth, Some(&zt), Some(&dt), Some(&zb)).expect("parse");
+        assert_eq!(raw.up, 4396);
+        assert_eq!(raw.down, 771);
+        assert_eq!(raw.flat, 128);
+        assert_eq!(raw.limit_up, 118);
+        assert_eq!(raw.limit_down, 10);
+        assert_eq!(raw.broken_boards, 33);
         assert_eq!(raw.max_streak, 5);
-        assert_eq!(raw.main_net_inflow, Some(-1_200_000_000.0));
+        assert!(raw.missing.contains(&"涨跌中位数".to_string()));
+        assert!(!raw.missing.contains(&"涨停跌停".to_string()));
     }
 
     #[test]
     fn missing_data_is_error() {
-        let json: Value = serde_json::from_str(r#"{"data":{}}"#).unwrap();
-        assert!(parse_sentiment(&json).is_err());
+        let breadth: Value = serde_json::from_str(r#"{"data":{}}"#).unwrap();
+        assert!(parse_sentiment(&breadth, None, None, None).is_err());
     }
 
     #[test]

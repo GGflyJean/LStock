@@ -51,6 +51,8 @@ struct ScopeState {
     last_started: Mutex<Option<Instant>>,
 }
 
+type FundamentalsLocks = Arc<Mutex<HashMap<(Market, String), Arc<AsyncMutex<()>>>>>;
+
 #[derive(Clone)]
 pub struct RefreshService {
     pub db: Db,
@@ -58,6 +60,7 @@ pub struct RefreshService {
     pub providers: Providers,
     scopes: Arc<Mutex<HashMap<ScopeKey, Arc<ScopeState>>>>,
     running: Arc<Mutex<HashSet<ScopeKey>>>,
+    fundamentals_locks: FundamentalsLocks,
     semaphore: Arc<Semaphore>,
 }
 
@@ -70,6 +73,7 @@ impl RefreshService {
             providers,
             scopes: Arc::new(Mutex::new(HashMap::new())),
             running: Arc::new(Mutex::new(HashSet::new())),
+            fundamentals_locks: Arc::new(Mutex::new(HashMap::new())),
             semaphore: Arc::new(Semaphore::new(permits)),
         }
     }
@@ -167,11 +171,52 @@ impl RefreshService {
     }
 
     pub async fn request_many(&self, keys: &[ScopeKey], trigger: Trigger) -> Vec<RefreshOutcome> {
-        let mut outcomes = Vec::new();
-        for key in keys {
-            outcomes.push(self.request(*key, trigger).await);
+        let mut set = tokio::task::JoinSet::new();
+        for (index, key) in keys.iter().copied().enumerate() {
+            let service = self.clone();
+            set.spawn(async move { (index, service.request(key, trigger).await) });
         }
-        outcomes
+        let mut outcomes: Vec<Option<RefreshOutcome>> = vec![None; keys.len()];
+        while let Some(result) = set.join_next().await {
+            match result {
+                Ok((index, outcome)) => outcomes[index] = Some(outcome),
+                Err(error) => tracing::error!(%error, "刷新任务 join 失败"),
+            }
+        }
+        outcomes.into_iter().flatten().collect()
+    }
+
+    pub fn spawn_startup_refresh(&self) -> tokio::task::JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let keys = startup_scopes();
+            tracing::info!(scopes = keys.len(), "启动全局数据刷新");
+            let outcomes = service.request_many(&keys, Trigger::Startup).await;
+            let success = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RefreshOutcome::Success { .. }))
+                .count();
+            let failed = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RefreshOutcome::Failed { .. }))
+                .count();
+            let merged = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RefreshOutcome::Merged { .. }))
+                .count();
+            let cooldown = outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, RefreshOutcome::Cooldown { .. }))
+                .count();
+            tracing::info!(
+                total = outcomes.len(),
+                success,
+                failed,
+                merged,
+                cooldown,
+                "启动全局数据刷新结束"
+            );
+        })
     }
 
     async fn run_scope(&self, key: ScopeKey, trigger: Trigger) -> Result<DateTime<Utc>> {
@@ -353,7 +398,16 @@ impl RefreshService {
     }
 
     async fn refresh_fundamentals(&self, market: Market, symbols: &[String]) {
+        let mut consecutive_failures = 0;
         for symbol in symbols {
+            let lock = {
+                let mut locks = self.fundamentals_locks.lock().expect("fundamentals lock");
+                locks
+                    .entry((market, symbol.clone()))
+                    .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                    .clone()
+            };
+            let _guard = lock.lock().await;
             match self.db.get_fundamentals(market, symbol) {
                 Ok(Some(_)) => continue,
                 Ok(None) => {}
@@ -364,12 +418,22 @@ impl RefreshService {
             }
             match self.providers.fundamentals(market, symbol).await {
                 Ok(fundamentals) => {
+                    consecutive_failures = 0;
                     if let Err(error) = self.db.upsert_fundamentals(&fundamentals, Utc::now()) {
                         tracing::warn!(%error, symbol, "写入基本面失败");
                     }
                 }
                 Err(error) => {
+                    consecutive_failures += 1;
                     tracing::warn!(%error, market = market.code(), symbol, "抓取基本面失败");
+                    if consecutive_failures >= 3 {
+                        tracing::warn!(
+                            market = market.code(),
+                            remaining = symbols.len(),
+                            "基本面连续失败 3 次，跳过剩余标的"
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -481,6 +545,14 @@ pub fn scheduled_scopes(market: Market) -> Vec<ScopeKey> {
     keys
 }
 
+pub fn startup_scopes() -> Vec<ScopeKey> {
+    let mut keys = Vec::new();
+    for market in Market::ALL {
+        keys.extend(scheduled_scopes(market));
+    }
+    keys
+}
+
 pub fn scopes_for(market: Market, tab: Tab, board: Option<Board>) -> Vec<ScopeKey> {
     if !tab.supported() {
         return Vec::new();
@@ -551,6 +623,15 @@ mod tests {
         let keys = scheduled_scopes(Market::Cn);
         assert_eq!(keys.len(), 6);
         assert!(keys.iter().any(|key| key.scope() == "ranking:short"));
+        assert!(keys.iter().any(|key| key.scope() == "ranking:dividend"));
+    }
+
+    #[test]
+    fn startup_scopes_cover_both_markets() {
+        let keys = startup_scopes();
+        assert_eq!(keys.len(), 12);
+        assert!(keys.iter().any(|key| key.market == Market::Cn));
+        assert!(keys.iter().any(|key| key.market == Market::Us));
         assert!(keys.iter().any(|key| key.scope() == "ranking:dividend"));
     }
 

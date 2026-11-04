@@ -92,6 +92,7 @@ async fn serve() -> Result<()> {
         tracing::info!("已启用出站代理");
     }
 
+    let startup = service.spawn_startup_refresh();
     let scheduler_cn = Scheduler::spawn(service.clone(), Market::Cn);
     let scheduler_us = Scheduler::spawn(service.clone(), Market::Us);
 
@@ -108,6 +109,7 @@ async fn serve() -> Result<()> {
         .with_context(|| format!("无法监听 {}", config.bind_addr))?;
     tracing::info!(address = %config.bind_addr, "LStock 已启动");
     let result = axum::serve(listener, app).await;
+    startup.abort();
     scheduler_cn.abort();
     scheduler_us.abort();
     result?;

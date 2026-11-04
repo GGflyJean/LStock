@@ -29,6 +29,35 @@ fn tencent_line(symbol: &str, name: &str, price: &str) -> String {
     format!("v_{symbol}=\"{}\";", fields.join("~"))
 }
 
+async fn mount_sentiment(server: &MockServer, delay: Option<std::time::Duration>) {
+    let mut breadth = ResponseTemplate::new(200).set_body_raw(
+        r#"{"data":{"diff":[{"f104":1849,"f105":440,"f106":68,"f6":953265155867.1},{"f104":2547,"f105":331,"f106":60,"f6":1084426578752.9}]}}"#,
+        "application/json",
+    );
+    if let Some(delay) = delay {
+        breadth = breadth.set_delay(delay);
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/qt/ulist.np/get"))
+        .respond_with(breadth)
+        .mount(server)
+        .await;
+    for (endpoint, body) in [
+        (
+            "getTopicZTPool",
+            r#"{"data":{"tc":118,"pool":[{"lbc":5},{"lbc":2}]}}"#,
+        ),
+        ("getTopicDTPool", r#"{"data":{"tc":10}}"#),
+        ("getTopicZBPool", r#"{"data":{"tc":33}}"#),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+            .mount(server)
+            .await;
+    }
+}
+
 fn build(server: &MockServer, cooldown: u64) -> (RefreshService, tempfile::TempDir) {
     build_with(server, cooldown, 4)
 }
@@ -87,14 +116,7 @@ async fn mount_market_data(server: &MockServer) {
         .mount(server)
         .await;
 
-    Mock::given(method("GET"))
-        .and(path("/api/qt/clist/get"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(
-            r#"{"data":{"diff":[{"f104":3000,"f105":1800,"f106":100,"f107":40,"f108":5,"f109":10,"f110":4,"f111":120000000000,"f112":3.0,"f113":0.2,"f114":50,"f115":10,"f116":500000000}]}}"#,
-            "application/json",
-        ))
-        .mount(server)
-        .await;
+    mount_sentiment(server, None).await;
 }
 
 #[tokio::test]
@@ -333,6 +355,44 @@ async fn ranking_pipeline_writes_ranking_snapshot() {
 }
 
 #[tokio::test]
+async fn request_many_runs_scopes_concurrently() {
+    let server = MockServer::start().await;
+    let index = [
+        tencent_line("sh000001", "上证指数", "3891.0"),
+        tencent_line("sz399001", "深证成指", "12000.0"),
+        tencent_line("sz399006", "创业板指", "2500.0"),
+    ]
+    .join("\n");
+    let index_bytes = encoding_rs::GBK.encode(&index).0.to_vec();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(index_bytes)
+                .set_delay(std::time::Duration::from_millis(400)),
+        )
+        .mount(&server)
+        .await;
+    mount_sentiment(&server, Some(std::time::Duration::from_millis(400))).await;
+    let (service, _dir) = build_with(&server, 0, 2);
+    let keys = vec![
+        ScopeKey::new(Market::Cn, Tab::Index, None),
+        ScopeKey::new(Market::Cn, Tab::Sentiment, None),
+    ];
+    let started = std::time::Instant::now();
+    let outcomes = service.request_many(&keys, Trigger::Manual).await;
+    let elapsed = started.elapsed();
+    assert_eq!(outcomes.len(), 2);
+    assert!(outcomes
+        .iter()
+        .all(|outcome| matches!(outcome, RefreshOutcome::Success { .. })));
+    assert!(
+        elapsed < std::time::Duration::from_millis(700),
+        "elapsed={elapsed:?}"
+    );
+}
+
+#[tokio::test]
 async fn unsupported_tab_refresh_is_empty_scope() {
     assert!(scopes_for(Market::Cn, Tab::Macro, None).is_empty());
 }
@@ -356,18 +416,7 @@ async fn global_concurrency_limits_parallel_requests() {
         )
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/api/qt/clist/get"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(
-                    r#"{"data":{"diff":[{"f104":3000,"f105":1800,"f106":100}]}}"#,
-                    "application/json",
-                )
-                .set_delay(std::time::Duration::from_millis(200)),
-        )
-        .mount(&server)
-        .await;
+    mount_sentiment(&server, Some(std::time::Duration::from_millis(200))).await;
     let (service, _dir) = build_with(&server, 0, 1);
     let index_key = ScopeKey::new(Market::Cn, Tab::Index, None);
     let sentiment_key = ScopeKey::new(Market::Cn, Tab::Sentiment, None);

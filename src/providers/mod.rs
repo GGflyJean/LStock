@@ -216,6 +216,7 @@ impl Providers {
                 http.clone(),
                 config.eastmoney_base.clone(),
                 config.eastmoney_datacenter_base.clone(),
+                config.eastmoney_push2ex_base.clone(),
             ),
             yahoo: yahoo::YahooProvider::new(http.clone(), config.yahoo_base.clone()),
             stooq: stooq::StooqProvider::new(http.clone(), config.stooq_base.clone()),

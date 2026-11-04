@@ -14,6 +14,7 @@ fn provider_config(server: &MockServer) -> ProviderConfig {
         sina_base: server.uri(),
         eastmoney_base: server.uri(),
         eastmoney_datacenter_base: server.uri(),
+        eastmoney_push2ex_base: server.uri(),
         yahoo_base: server.uri(),
         stooq_base: server.uri(),
         timeout_secs: 5,
@@ -114,11 +115,33 @@ async fn proxy_configuration_is_applied() {
 async fn eastmoney_parses_sentiment_via_http() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/api/qt/clist/get"))
+        .and(path("/api/qt/ulist.np/get"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            r#"{"data":{"diff":[{"f104":3000,"f105":1800,"f106":100,"f107":40,"f108":5,"f109":10,"f110":4,"f111":120000000000,"f112":3.0,"f113":0.2,"f114":50,"f115":10,"f116":500000000}]}}"#,
+            r#"{"data":{"diff":[{"f104":1849,"f105":440,"f106":68,"f6":953265155867.1},{"f104":2547,"f105":331,"f106":60,"f6":1084426578752.9}]}}"#,
             "application/json",
         ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/getTopicZTPool"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"data":{"tc":118,"pool":[{"lbc":5},{"lbc":2}]}}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/getTopicDTPool"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(r#"{"data":{"tc":10}}"#, "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/getTopicZBPool"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(r#"{"data":{"tc":33}}"#, "application/json"),
+        )
         .mount(&server)
         .await;
     let config = provider_config(&server);
@@ -126,11 +149,14 @@ async fn eastmoney_parses_sentiment_via_http() {
         HttpClient::new(&config).unwrap(),
         server.uri(),
         server.uri(),
+        server.uri(),
     );
     let raw = provider.sentiment().await.unwrap();
-    assert_eq!(raw.up, 3000);
-    assert_eq!(raw.limit_up, 40);
-    assert_eq!(raw.main_net_inflow, Some(500000000.0));
+    assert_eq!(raw.up, 4396);
+    assert_eq!(raw.down, 771);
+    assert_eq!(raw.limit_up, 118);
+    assert_eq!(raw.limit_down, 10);
+    assert_eq!(raw.max_streak, 5);
 }
 
 #[tokio::test]
@@ -236,6 +262,7 @@ async fn eastmoney_fundamentals_parse_finance_dividend_and_valuation() {
     let config = provider_config(&server);
     let provider = EastmoneyProvider::new(
         HttpClient::new(&config).unwrap(),
+        server.uri(),
         server.uri(),
         server.uri(),
     );

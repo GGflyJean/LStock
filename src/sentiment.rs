@@ -3,19 +3,40 @@ use crate::models::{
 };
 
 pub fn compute_cn(raw: &CnSentimentRaw) -> SentimentReport {
+    let has = |key: &str| !raw.missing.iter().any(|item| item == key);
     let total = (raw.up + raw.down + raw.flat).max(1) as f64;
     let breadth = raw.up as f64 / total * 100.0;
-    let limit_score = (50.0 + (raw.limit_up - raw.limit_down) as f64).clamp(0.0, 100.0);
+    let limit_score = if has("涨停跌停") {
+        (50.0 + (raw.limit_up - raw.limit_down) as f64).clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
     let broken_rate = if raw.limit_up + raw.broken_boards > 0 {
         raw.broken_boards as f64 / (raw.limit_up + raw.broken_boards) as f64 * 100.0
     } else {
         0.0
     };
-    let broken_score = (100.0 - broken_rate).clamp(0.0, 100.0);
-    let streak_score = (raw.max_streak as f64 * 15.0).clamp(0.0, 100.0);
-    let amount_score = (50.0 + raw.amount_change_pct * 2.0).clamp(0.0, 100.0);
-    let median_score = (50.0 + raw.median_change * 20.0).clamp(0.0, 100.0);
-    let new_score = if raw.new_high + raw.new_low > 0 {
+    let broken_score = if has("炸板率") {
+        (100.0 - broken_rate).clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let streak_score = if has("连板高度") {
+        (raw.max_streak as f64 * 15.0).clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let amount_score = if has("量能变化") {
+        (50.0 + raw.amount_change_pct * 2.0).clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let median_score = if has("涨跌中位数") {
+        (50.0 + raw.median_change * 20.0).clamp(0.0, 100.0)
+    } else {
+        50.0
+    };
+    let new_score = if has("新高新低") && raw.new_high + raw.new_low > 0 {
         (50.0 + (raw.new_high - raw.new_low) as f64 / (raw.new_high + raw.new_low) as f64 * 50.0)
             .clamp(0.0, 100.0)
     } else {
@@ -30,58 +51,69 @@ pub fn compute_cn(raw: &CnSentimentRaw) -> SentimentReport {
         + median_score * 0.10
         + new_score * 0.10;
 
-    let metrics = vec![
-        metric(
-            "breadth",
-            "涨跌家数",
-            format!("涨 {} / 平 {} / 跌 {}", raw.up, raw.flat, raw.down),
-            Some(breadth),
-            "上涨占比",
-        ),
-        metric(
+    let mut metrics = vec![metric(
+        "breadth",
+        "涨跌家数",
+        format!("涨 {} / 平 {} / 跌 {}", raw.up, raw.flat, raw.down),
+        Some(breadth),
+        "上涨占比",
+    )];
+    if has("涨停跌停") {
+        metrics.push(metric(
             "limit",
             "涨停 / 跌停",
             format!("{} / {}", raw.limit_up, raw.limit_down),
             Some(limit_score),
             "",
-        ),
-        metric(
+        ));
+    }
+    if has("炸板率") {
+        metrics.push(metric(
             "broken",
             "炸板率",
             format!("{broken_rate:.1}%"),
             Some(broken_rate),
             "越低越好",
-        ),
-        metric(
+        ));
+    }
+    if has("连板高度") {
+        metrics.push(metric(
             "streak",
             "连板高度",
             format!("{} 板", raw.max_streak),
             Some(raw.max_streak as f64),
             "",
-        ),
-        metric(
-            "amount",
-            "两市成交额",
-            format!("{:.2} 万亿", raw.amount / 1_0000_0000_0000.0),
-            Some(raw.amount),
-            format!("量能变化 {:+.1}%", raw.amount_change_pct),
-        ),
-        metric(
+        ));
+    }
+    metrics.push(metric(
+        "amount",
+        "两市成交额",
+        format!("{:.2} 万亿", raw.amount / 1_0000_0000_0000.0),
+        Some(raw.amount),
+        if has("量能变化") {
+            format!("量能变化 {:+.1}%", raw.amount_change_pct)
+        } else {
+            "量能变化未获取".to_string()
+        },
+    ));
+    if has("涨跌中位数") {
+        metrics.push(metric(
             "median",
             "涨跌中位数",
             format!("{:+.2}%", raw.median_change),
             Some(raw.median_change),
             "",
-        ),
-        metric(
+        ));
+    }
+    if has("新高新低") {
+        metrics.push(metric(
             "new",
             "新高 / 新低",
             format!("{} / {}", raw.new_high, raw.new_low),
             Some(raw.new_high as f64 - raw.new_low as f64),
             "",
-        ),
-    ];
-    let mut metrics = metrics;
+        ));
+    }
     if let Some(inflow) = raw.main_net_inflow {
         metrics.push(metric(
             "fund_flow",
@@ -97,7 +129,7 @@ pub fn compute_cn(raw: &CnSentimentRaw) -> SentimentReport {
         temperature: round1(temperature),
         band: band(temperature).to_string(),
         metrics,
-        missing: Vec::new(),
+        missing: raw.missing.clone(),
         source: raw.source.clone(),
         delay: DelayKind::Realtime,
         as_of_utc: raw.as_of_utc,
@@ -270,6 +302,7 @@ mod tests {
             new_high: 80,
             new_low: 12,
             main_net_inflow: Some(-1_200_000_000.0),
+            missing: Vec::new(),
             source: "东方财富".to_string(),
             as_of_utc: Utc::now(),
         }
