@@ -98,6 +98,8 @@ impl RefreshService {
     }
 
     pub async fn request(&self, key: ScopeKey, trigger: Trigger) -> RefreshOutcome {
+        let started = Instant::now();
+        tracing::info!(scope = %key, trigger = trigger.as_str(), "收到刷新请求");
         let state = self.state_for(key);
         match state.lock.clone().try_lock_owned() {
             Ok(_guard) => {
@@ -107,6 +109,11 @@ impl RefreshService {
                         let cooldown = Duration::from_secs(self.config.cooldown_secs);
                         if elapsed < cooldown {
                             let remaining = (cooldown - elapsed).as_secs().max(1);
+                            tracing::info!(
+                                scope = %key,
+                                remaining_secs = remaining,
+                                "刷新冷却中，拒绝请求"
+                            );
                             return RefreshOutcome::Cooldown {
                                 scope: key.to_string(),
                                 remaining_secs: remaining,
@@ -123,17 +130,34 @@ impl RefreshService {
                     running.remove(&key);
                 }
                 match result {
-                    Ok(as_of_utc) => RefreshOutcome::Success {
-                        scope: key.to_string(),
-                        as_of_utc,
-                    },
-                    Err(error) => RefreshOutcome::Failed {
-                        scope: key.to_string(),
-                        error: format!("{error:#}"),
-                    },
+                    Ok(as_of_utc) => {
+                        tracing::info!(
+                            scope = %key,
+                            as_of = %as_of_utc,
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "刷新成功"
+                        );
+                        RefreshOutcome::Success {
+                            scope: key.to_string(),
+                            as_of_utc,
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            scope = %key,
+                            error = %format!("{error:#}"),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "刷新失败"
+                        );
+                        RefreshOutcome::Failed {
+                            scope: key.to_string(),
+                            error: format!("{error:#}"),
+                        }
+                    }
                 }
             }
             Err(_) => {
+                tracing::info!(scope = %key, "已有同 scope 刷新任务，等待并合并");
                 let _guard = state.lock.clone().lock_owned().await;
                 RefreshOutcome::Merged {
                     scope: key.to_string(),
@@ -157,6 +181,8 @@ impl RefreshService {
             trigger.as_str(),
             RefreshStatus::Running.as_str(),
         )?;
+        let started = Instant::now();
+        tracing::info!(scope = %key, trigger = trigger.as_str(), run_id, "刷新任务开始");
         let _permit = self
             .semaphore
             .acquire()
@@ -171,6 +197,13 @@ impl RefreshService {
                     Some(as_of),
                     None,
                 )?;
+                tracing::info!(
+                    scope = %key,
+                    run_id,
+                    as_of = %as_of,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "刷新任务完成"
+                );
                 Ok(as_of)
             }
             Err(error) => {
@@ -181,6 +214,13 @@ impl RefreshService {
                     None,
                     Some(&message),
                 )?;
+                tracing::error!(
+                    scope = %key,
+                    run_id,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %message,
+                    "刷新任务失败"
+                );
                 Err(error)
             }
         }
@@ -195,13 +235,31 @@ impl RefreshService {
                     .into_iter()
                     .map(|item| item.symbol)
                     .collect();
+                tracing::info!(
+                    market = key.market.code(),
+                    symbols = symbols.len(),
+                    "刷新自选"
+                );
                 let payload = self.providers.quotes(key.market, &symbols).await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    quotes = payload.quotes.len(),
+                    missing = payload.missing.len(),
+                    source = %payload.source_note,
+                    "自选数据已获取"
+                );
                 let as_of = payload.as_of_utc;
                 self.store_snapshot(key.market, "watch", as_of, &payload)?;
                 Ok(as_of)
             }
             Tab::Index => {
                 let payload = self.providers.indices(key.market).await?;
+                tracing::info!(
+                    market = key.market.code(),
+                    indices = payload.indices.len(),
+                    source = %payload.source_note,
+                    "指数数据已获取"
+                );
                 let as_of = payload.as_of_utc;
                 self.store_snapshot(key.market, "index", as_of, &payload)?;
                 Ok(as_of)
@@ -210,6 +268,13 @@ impl RefreshService {
                 Market::Cn => {
                     let raw = self.providers.cn_sentiment().await?;
                     let report = sentiment::compute_cn(&raw);
+                    tracing::info!(
+                        market = "cn",
+                        temperature = report.temperature,
+                        band = %report.band,
+                        missing = report.missing.len(),
+                        "A股情绪已计算"
+                    );
                     let as_of = report.as_of_utc;
                     self.store_snapshot(key.market, "sentiment", as_of, &report)?;
                     Ok(as_of)
@@ -217,6 +282,13 @@ impl RefreshService {
                 Market::Us => {
                     let raw = self.providers.us_sentiment().await?;
                     let report = sentiment::compute_us(&raw);
+                    tracing::info!(
+                        market = "us",
+                        temperature = report.temperature,
+                        band = %report.band,
+                        missing = report.missing.len(),
+                        "美股情绪已计算"
+                    );
                     let as_of = report.as_of_utc;
                     self.store_snapshot(key.market, "sentiment", as_of, &report)?;
                     Ok(as_of)
@@ -243,6 +315,14 @@ impl RefreshService {
                         fundamentals.insert(instrument.symbol.clone(), item);
                     }
                 }
+                tracing::info!(
+                    market = key.market.code(),
+                    board = board.key(),
+                    pool = pool.len(),
+                    quotes = quotes.len(),
+                    fundamentals = fundamentals.len(),
+                    "开始计算策略榜单"
+                );
                 let specs = rankings::load_weights(&self.db, board)?;
                 let payload = rankings::compute(RankingInput {
                     board,
@@ -255,10 +335,18 @@ impl RefreshService {
                 });
                 self.db.insert_ranking(&payload)?;
                 self.db.prune_rankings(self.config.snapshot_retention)?;
+                tracing::info!(
+                    market = key.market.code(),
+                    board = board.key(),
+                    items = payload.items.len(),
+                    insufficient = payload.insufficient.len(),
+                    "策略榜单已生成"
+                );
                 self.store_snapshot(key.market, &key.scope(), as_of, &payload)?;
                 Ok(as_of)
             }
             Tab::Sectors | Tab::Movers | Tab::News | Tab::Macro => {
+                tracing::warn!(scope = %key, "尝试刷新未开放 tab");
                 Err(anyhow::anyhow!("{} tab 暂未开放", key.tab.label()))
             }
         }
@@ -333,6 +421,11 @@ impl RefreshService {
     ) -> Vec<RefreshOutcome> {
         let local_date = now.with_timezone(&market.tz()).date_naive();
         if !is_trading_day(market, local_date) {
+            tracing::info!(
+                market = market.code(),
+                date = %local_date,
+                "休市日，跳过定时刷新"
+            );
             let mut outcomes = Vec::new();
             for key in scheduled_scopes(market) {
                 if let Err(error) = self.db.record_skipped(market, &key.scope(), "休市") {
@@ -346,7 +439,33 @@ impl RefreshService {
             return outcomes;
         }
         let keys = scheduled_scopes(market);
-        self.request_many(&keys, Trigger::Scheduled).await
+        tracing::info!(
+            market = market.code(),
+            scopes = keys.len(),
+            "开始执行定时刷新"
+        );
+        let outcomes = self.request_many(&keys, Trigger::Scheduled).await;
+        tracing::info!(
+            market = market.code(),
+            success = outcomes
+                .iter()
+                .filter(|o| matches!(o, RefreshOutcome::Success { .. }))
+                .count(),
+            failed = outcomes
+                .iter()
+                .filter(|o| matches!(o, RefreshOutcome::Failed { .. }))
+                .count(),
+            merged = outcomes
+                .iter()
+                .filter(|o| matches!(o, RefreshOutcome::Merged { .. }))
+                .count(),
+            cooldown = outcomes
+                .iter()
+                .filter(|o| matches!(o, RefreshOutcome::Cooldown { .. }))
+                .count(),
+            "定时刷新结束"
+        );
+        outcomes
     }
 }
 

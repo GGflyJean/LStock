@@ -162,6 +162,24 @@ GitHub Actions 每次成功构建还会导出 `l-stock-image.tar.gz` 供离线�
 - `GET /api/status`：上述状态的 JSON 版本。
 - `POST /api/refresh`：需要登录与 CSRF，表单字段 `market=cn|us|both`、`tab`、`board`。
 
+## 日志与调试
+
+- 默认日志级别为 `info`，会输出每个 HTTP 请求、手动刷新范围、刷新任务开始/完成、每个行情源的尝试与失败原因、快照写入结果。
+- 需要更详细的外部请求日志时，在环境变量中设置：
+
+```text
+RUST_LOG=l_stock=debug,tower_http=debug
+```
+
+- 查看容器日志：
+
+```bash
+docker logs -f --tail=200 l-stock-fixed
+```
+
+- `/status` 页面每 15 秒自动刷新，也可以点“立即刷新”。
+- 手动刷新失败时，页面与日志都会显示具体 scope、数据源和错误信息；刷新记录保存在 `refresh_runs`。
+
 ## 测试
 
 ```bash

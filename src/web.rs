@@ -11,6 +11,8 @@ use axum::{Form, Json, Router};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use tower_http::services::ServeDir;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::auth::{
     self, clear_cookie, client_key, is_secure_request, session_cookie, session_token, Auth,
@@ -198,6 +200,11 @@ pub fn router(state: AppState) -> Router {
         .route("/watch/{market}/delete/{id}", post(remove_watch))
         .route("/weights/{board}", post(save_weights))
         .nest_service("/static", ServeDir::new(static_dir))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(state)
 }
 
@@ -270,6 +277,13 @@ async fn dashboard(
             Vec::new()
         }
     };
+    tracing::debug!(
+        view,
+        tab = tab.key(),
+        board = board.key(),
+        panes = panes.len(),
+        "渲染盯盘页面"
+    );
     let now = Utc::now();
     let template = DashboardTemplate {
         view,
@@ -640,10 +654,38 @@ async fn api_refresh(
     if keys.is_empty() {
         return bad_request("没有可刷新的范围");
     }
+    tracing::info!(
+        market = %form.market,
+        tab = tab.key(),
+        board = ?board,
+        scopes = ?keys,
+        "开始手动刷新当前页面"
+    );
     let outcomes = state
         .service
         .request_many(&keys, crate::models::Trigger::Manual)
         .await;
+    for outcome in &outcomes {
+        match outcome {
+            crate::service::RefreshOutcome::Success { scope, as_of_utc } => {
+                tracing::info!(scope = %scope, as_of = %as_of_utc, "手动刷新项成功")
+            }
+            crate::service::RefreshOutcome::Merged { scope } => {
+                tracing::info!(scope = %scope, "手动刷新项已合并到运行中任务")
+            }
+            crate::service::RefreshOutcome::Cooldown {
+                scope,
+                remaining_secs,
+            } => tracing::info!(
+                scope = %scope,
+                remaining_secs,
+                "手动刷新项处于冷却"
+            ),
+            crate::service::RefreshOutcome::Failed { scope, error } => {
+                tracing::error!(scope = %scope, error = %error, "手动刷新项失败")
+            }
+        }
+    }
     Json(serde_json::json!({
         "outcomes": outcomes,
         "refreshed_at": Utc::now(),
@@ -655,7 +697,7 @@ async fn status_page(State(state): State<AppState>, headers: HeaderMap) -> Respo
     if let Some(response) = require_web(&state, &headers) {
         return response;
     }
-    let runs = state
+    let runs: Vec<RunView> = state
         .db
         .recent_refresh_runs(30)
         .unwrap_or_default()
@@ -675,6 +717,11 @@ async fn status_page(State(state): State<AppState>, headers: HeaderMap) -> Respo
             error: view.last_error.unwrap_or_default(),
         })
         .collect();
+    tracing::info!(
+        runs = runs.len(),
+        running = state.service.running_scopes().len(),
+        "查看刷新状态页"
+    );
     let now = Utc::now();
     let config = vec![
         config_row("监听地址", state.config.bind_addr.to_string()),

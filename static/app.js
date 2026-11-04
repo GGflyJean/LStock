@@ -8,6 +8,14 @@
   tickClock();
   setInterval(tickClock, 1000);
 
+  const autoRefresh = document.querySelector('[data-auto-refresh]');
+  if (autoRefresh) {
+    const interval = Number(autoRefresh.dataset.autoRefresh) || 15000;
+    setInterval(function () {
+      window.location.reload();
+    }, interval);
+  }
+
   const button = document.getElementById('refresh-btn');
   if (!button) return;
   const status = document.getElementById('refresh-status');

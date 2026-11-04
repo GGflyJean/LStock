@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -90,21 +90,29 @@ impl HttpClient {
             for (key, value) in headers {
                 request = request.header(*key, *value);
             }
+            tracing::debug!(url, attempt, "发起行情请求");
             match request.send().await {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
+                        tracing::debug!(url, attempt, %status, "行情请求成功");
                         return Ok(response.bytes().await?.to_vec());
                     }
+                    tracing::warn!(url, attempt, %status, "行情请求返回非成功状态");
                     last_error = Some(anyhow::anyhow!("HTTP {status}"));
                 }
-                Err(error) => last_error = Some(anyhow::anyhow!("{error}")),
+                Err(error) => {
+                    tracing::warn!(url, attempt, %error, "行情请求失败");
+                    last_error = Some(anyhow::anyhow!("{error}"));
+                }
             }
             if attempt < self.retries {
                 tokio::time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
             }
         }
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("请求失败")))
+        let error = last_error.unwrap_or_else(|| anyhow::anyhow!("请求失败"));
+        tracing::error!(url, %error, "行情请求最终失败");
+        Err(error)
     }
 
     pub async fn get_text(&self, url: &str, headers: &[(&str, &str)]) -> Result<String> {
@@ -230,8 +238,22 @@ impl Providers {
             Market::Us => vec![("tencent", &self.tencent), ("yahoo", &self.yahoo)],
         };
         for (name, provider) in attempts {
+            let started = Instant::now();
+            tracing::info!(
+                market = market.code(),
+                provider = provider.name(),
+                symbols = symbols.len(),
+                "尝试行情源"
+            );
             match provider.quotes(market, symbols).await {
                 Ok(quotes) if !quotes.is_empty() => {
+                    tracing::info!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        count = quotes.len(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "行情源成功"
+                    );
                     self.health.record_ok(name);
                     let found: std::collections::HashSet<&str> =
                         quotes.iter().map(|quote| quote.symbol.as_str()).collect();
@@ -258,16 +280,31 @@ impl Providers {
                 }
                 Ok(_) => {
                     let message = format!("{name} 返回空数据");
+                    tracing::warn!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "行情源返回空数据"
+                    );
                     self.health.record_err(name, &message);
                     errors.push(message);
                 }
                 Err(error) => {
+                    tracing::warn!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %format!("{error:#}"),
+                        "行情源失败"
+                    );
                     self.health.record_err(name, &format!("{error:#}"));
                     errors.push(format!("{name}: {error:#}"));
                 }
             }
         }
-        Err(anyhow::anyhow!("所有行情源均失败：{}", errors.join("；")))
+        let error = anyhow::anyhow!("所有行情源均失败：{}", errors.join("；"));
+        tracing::error!(market = market.code(), error = %error, "所有行情源失败");
+        Err(error)
     }
 
     pub async fn indices(&self, market: Market) -> Result<IndexPayload> {
@@ -281,8 +318,21 @@ impl Providers {
             ],
         };
         for (name, provider) in attempts {
+            let started = Instant::now();
+            tracing::info!(
+                market = market.code(),
+                provider = provider.name(),
+                "尝试指数源"
+            );
             match provider.indices(market).await {
                 Ok(indices) if !indices.is_empty() => {
+                    tracing::info!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        count = indices.len(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "指数源成功"
+                    );
                     self.health.record_ok(name);
                     let mut source_note = format!("来源：{}", provider.name());
                     if !errors.is_empty() {
@@ -301,25 +351,53 @@ impl Providers {
                 }
                 Ok(_) => {
                     let message = format!("{name} 返回空数据");
+                    tracing::warn!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "指数源返回空数据"
+                    );
                     self.health.record_err(name, &message);
                     errors.push(message);
                 }
                 Err(error) => {
+                    tracing::warn!(
+                        market = market.code(),
+                        provider = provider.name(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        error = %format!("{error:#}"),
+                        "指数源失败"
+                    );
                     self.health.record_err(name, &format!("{error:#}"));
                     errors.push(format!("{name}: {error:#}"));
                 }
             }
         }
-        Err(anyhow::anyhow!("所有指数源均失败：{}", errors.join("；")))
+        let error = anyhow::anyhow!("所有指数源均失败：{}", errors.join("；"));
+        tracing::error!(market = market.code(), error = %error, "所有指数源失败");
+        Err(error)
     }
 
     pub async fn cn_sentiment(&self) -> Result<CnSentimentRaw> {
+        let started = Instant::now();
+        tracing::info!("尝试 A股情绪源 东方财富");
         match self.eastmoney.sentiment().await {
             Ok(value) => {
+                tracing::info!(
+                    up = value.up,
+                    down = value.down,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "A股情绪源成功"
+                );
                 self.health.record_ok("eastmoney-sentiment");
                 Ok(value)
             }
             Err(error) => {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %format!("{error:#}"),
+                    "A股情绪源失败"
+                );
                 self.health
                     .record_err("eastmoney-sentiment", &format!("{error:#}"));
                 Err(error)
@@ -328,12 +406,20 @@ impl Providers {
     }
 
     pub async fn us_sentiment(&self) -> Result<UsSentimentRaw> {
+        let started = Instant::now();
+        tracing::info!("尝试美股情绪源 Yahoo");
         match self.yahoo.sentiment().await {
             Ok(value) => {
+                tracing::info!(elapsed_ms = started.elapsed().as_millis(), "美股情绪源成功");
                 self.health.record_ok("yahoo-sentiment");
                 Ok(value)
             }
             Err(error) => {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %format!("{error:#}"),
+                    "美股情绪源失败"
+                );
                 self.health
                     .record_err("yahoo-sentiment", &format!("{error:#}"));
                 Err(error)
@@ -342,12 +428,27 @@ impl Providers {
     }
 
     pub async fn fundamentals(&self, market: Market, symbol: &str) -> Result<Fundamentals> {
+        let started = Instant::now();
+        tracing::debug!(market = market.code(), symbol, "抓取基本面");
         match self.yahoo.fundamentals(market, symbol).await {
             Ok(value) => {
+                tracing::debug!(
+                    market = market.code(),
+                    symbol,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "基本面抓取成功"
+                );
                 self.health.record_ok("yahoo-fundamentals");
                 Ok(value)
             }
             Err(error) => {
+                tracing::warn!(
+                    market = market.code(),
+                    symbol,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    error = %format!("{error:#}"),
+                    "基本面抓取失败"
+                );
                 self.health
                     .record_err("yahoo-fundamentals", &format!("{error:#}"));
                 Err(error)

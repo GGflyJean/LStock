@@ -8,9 +8,9 @@
   </nav>
 </header>
 
-<main class="status">
+<main class="status" data-auto-refresh="15000">
   <h1>刷新状态</h1>
-  <p class="muted">UTC 时钟 <span id="utc-clock">{{ now_utc }}</span> · 下次 A股 {{ next_cn }} · 美股 {{ next_us }}</p>
+  <p class="muted">UTC 时钟 <span id="utc-clock">{{ now_utc }}</span> · 下次 A股 {{ next_cn }} · 美股 {{ next_us }} · <a href="/status">立即刷新</a> · 页面每 15 秒自动刷新</p>
 
   {% if !running.is_empty() %}
   <p class="running">运行中：
