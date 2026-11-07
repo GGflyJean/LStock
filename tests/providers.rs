@@ -318,7 +318,7 @@ async fn yahoo_fundamentals_are_persisted_shape() {
     assert_eq!(fundamentals.market, Market::Us);
     assert!(fundamentals
         .missing_for(Board::Long)
-        .contains(&"ROIC(roic)".to_string()));
+        .contains(&"ROIC".to_string()));
 }
 
 #[tokio::test]

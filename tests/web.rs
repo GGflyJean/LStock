@@ -492,7 +492,19 @@ async fn ranking_insufficient_list_is_rendered() {
         insufficient: vec![InsufficientItem {
             symbol: "sh600036".to_string(),
             name: "招商银行".to_string(),
-            missing: vec!["ROIC(roic)".to_string()],
+            missing: vec!["ROIC".to_string()],
+            factors: vec![
+                l_stock::models::DetailValue {
+                    label: "营收增速".to_string(),
+                    value: "2.10".to_string(),
+                    missing: false,
+                },
+                l_stock::models::DetailValue {
+                    label: "ROIC".to_string(),
+                    value: "缺失".to_string(),
+                    missing: true,
+                },
+            ],
         }],
         pool_size: 1,
         weights_summary: "测试权重".to_string(),
@@ -515,6 +527,9 @@ async fn ranking_insufficient_list_is_rendered() {
     assert!(body.contains("数据不足"));
     assert!(body.contains("招商银行"));
     assert!(body.contains("ROIC"));
+    assert!(body.contains("营收增速"));
+    assert!(body.contains("2.10"));
+    assert!(body.contains("缺失"));
 }
 
 #[tokio::test]

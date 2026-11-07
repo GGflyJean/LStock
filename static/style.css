@@ -459,3 +459,11 @@ input {
 .macro-value { font-size: 18px; font-weight: 700; }
 .macro-note { color: var(--muted); font-size: 12px; }
 .macro-canvas { width: 100%; height: 180px; display: block; }
+
+.insufficient-table { margin-top: 8px; }
+.insufficient-table th, .insufficient-table td { font-size: 12px; }
+.missing-factors { color: var(--warn); }
+.detail-factors { display: flex; flex-wrap: wrap; gap: 6px; }
+.detail-factors .factor { font-size: 12px; }
+.detail-factors .factor b { color: var(--text); }
+.detail-factors .missing-factor { color: var(--warn); opacity: 0.85; }

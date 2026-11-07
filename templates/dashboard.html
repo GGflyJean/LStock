@@ -144,12 +144,27 @@
       {% endif %}
       {% if !pane.ranking_insufficient.is_empty() %}
       <details class="insufficient">
-        <summary>数据不足 {{ pane.ranking_insufficient.len() }} 项</summary>
-        <ul>
+        <summary>数据不足 {{ pane.ranking_insufficient.len() }} 项（展开查看明细）</summary>
+        <table class="insufficient-table">
+          <thead><tr><th>标的</th><th>缺失因子</th><th>已获取因子</th></tr></thead>
+          <tbody>
           {% for item in pane.ranking_insufficient %}
-          <li>{{ item.name }} ({{ item.symbol }})：{{ item.missing_text() }}</li>
+          <tr>
+            <td>{{ item.name }}<span class="name">{{ item.symbol }}</span></td>
+            <td class="missing-factors">{{ item.missing_text() }}</td>
+            <td class="detail-factors">
+              {% if item.factors.is_empty() %}
+              <span class="muted">未获取到财务/行情数据</span>
+              {% else %}
+              {% for factor in item.factors %}
+              <span class="factor{% if factor.missing %} missing-factor{% endif %}">{{ factor.label }} <b>{{ factor.value }}</b></span>
+              {% endfor %}
+              {% endif %}
+            </td>
+          </tr>
           {% endfor %}
-        </ul>
+          </tbody>
+        </table>
       </details>
       {% endif %}
     {% else if pane.show_sectors %}

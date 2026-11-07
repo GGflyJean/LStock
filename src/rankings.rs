@@ -5,7 +5,8 @@ use chrono::{DateTime, Utc};
 
 use crate::db::{Db, Instrument};
 use crate::models::{
-    Board, FactorScore, Fundamentals, InsufficientItem, Market, Quote, RankingItem, RankingPayload,
+    Board, DetailValue, FactorScore, Fundamentals, InsufficientItem, Market, Quote, RankingItem,
+    RankingPayload,
 };
 
 pub const DEFAULT_CN_POOL: &[(&str, &str)] = &[
@@ -81,7 +82,7 @@ pub fn specs(board: Board) -> Vec<FactorSpec> {
             ("gross_margin_trend", "毛利率趋势", 0.10, true),
             ("free_cash_flow", "自由现金流", 0.15, true),
             ("debt_to_equity", "杠杆", 0.10, false),
-            ("valuation_percentile", "估值分位", 0.10, false),
+            ("valuation_percentile", "估值(PE)", 0.10, false),
         ],
         Board::Dividend => &[
             ("dividend_yield", "股息率", 0.25, true),
@@ -90,7 +91,7 @@ pub fn specs(board: Board) -> Vec<FactorSpec> {
             ("dividend_growth", "股息增速", 0.15, true),
             ("fcf_coverage", "FCF 覆盖", 0.15, true),
             ("debt_to_equity", "杠杆", 0.075, false),
-            ("valuation_percentile", "估值分位", 0.075, false),
+            ("valuation_percentile", "估值(PE)", 0.075, false),
         ],
     };
     rows.iter()
@@ -201,6 +202,7 @@ pub fn compute(input: RankingInput<'_>) -> RankingPayload {
                         symbol: instrument.symbol.clone(),
                         name: instrument.name.clone(),
                         missing,
+                        factors: Vec::new(),
                     });
                     continue;
                 };
@@ -226,6 +228,7 @@ pub fn compute(input: RankingInput<'_>) -> RankingPayload {
                         symbol: instrument.symbol.clone(),
                         name: instrument.name.clone(),
                         missing,
+                        factors: quote_details(quote, &input.specs),
                     });
                     continue;
                 }
@@ -237,6 +240,7 @@ pub fn compute(input: RankingInput<'_>) -> RankingPayload {
                         symbol: instrument.symbol.clone(),
                         name: instrument.name.clone(),
                         missing,
+                        factors: Vec::new(),
                     });
                     continue;
                 };
@@ -246,6 +250,7 @@ pub fn compute(input: RankingInput<'_>) -> RankingPayload {
                         symbol: instrument.symbol.clone(),
                         name: instrument.name.clone(),
                         missing,
+                        factors: fundamental_details(fundamentals, &input.specs),
                     });
                     continue;
                 }
@@ -364,6 +369,57 @@ pub fn compute(input: RankingInput<'_>) -> RankingPayload {
         pool_size: input.pool.len(),
         weights_summary,
     }
+}
+
+fn fundamental_details(fundamentals: &Fundamentals, specs: &[FactorSpec]) -> Vec<DetailValue> {
+    specs
+        .iter()
+        .map(|spec| match fundamental_value(fundamentals, spec.key) {
+            Some(value) => DetailValue {
+                label: spec.label.to_string(),
+                value: format_detail(value),
+                missing: false,
+            },
+            None => DetailValue {
+                label: spec.label.to_string(),
+                value: "缺失".to_string(),
+                missing: true,
+            },
+        })
+        .collect()
+}
+
+fn quote_details(quote: &Quote, specs: &[FactorSpec]) -> Vec<DetailValue> {
+    specs
+        .iter()
+        .map(|spec| {
+            let value = match spec.key {
+                "momentum" | "relative_strength" => Some(quote.change_pct),
+                "volume_ratio" => quote.volume_ratio,
+                "turnover" => quote.turnover,
+                "fund_flow" => quote.fund_flow,
+                "breakout" => quote.breakout_pct,
+                "volatility" => quote.volatility,
+                _ => None,
+            };
+            match value {
+                Some(value) => DetailValue {
+                    label: spec.label.to_string(),
+                    value: format_detail(value),
+                    missing: false,
+                },
+                None => DetailValue {
+                    label: spec.label.to_string(),
+                    value: "缺失".to_string(),
+                    missing: true,
+                },
+            }
+        })
+        .collect()
+}
+
+fn format_detail(value: f64) -> String {
+    format!("{value:.2}")
 }
 
 fn insert(map: &mut HashMap<String, f64>, key: &str, value: Option<f64>) {

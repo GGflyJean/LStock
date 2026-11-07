@@ -407,10 +407,20 @@ impl InsufficientItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetailValue {
+    pub label: String,
+    pub value: String,
+    #[serde(default)]
+    pub missing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InsufficientItem {
     pub symbol: String,
     pub name: String,
     pub missing: Vec<String>,
+    #[serde(default)]
+    pub factors: Vec<DetailValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -466,7 +476,7 @@ impl Fundamentals {
         match board {
             Board::Short => {}
             Board::Long => {
-                for (key, label, value) in [
+                for (_key, label, value) in [
                     ("revenue_growth", "营收增速", self.revenue_growth),
                     ("eps_growth", "EPS 增速", self.eps_growth),
                     ("roe", "ROE", self.roe),
@@ -475,17 +485,17 @@ impl Fundamentals {
                     ("debt_to_equity", "杠杆", self.debt_to_equity),
                     (
                         "valuation_percentile",
-                        "估值分位",
+                        "估值(PE)",
                         self.valuation_percentile,
                     ),
                 ] {
                     if value.is_none() {
-                        missing.push(format!("{label}({key})"));
+                        missing.push(label.to_string());
                     }
                 }
             }
             Board::Dividend => {
-                for (key, label, value) in [
+                for (_key, label, value) in [
                     ("dividend_yield", "股息率", self.dividend_yield),
                     ("payout_ratio", "派息率", self.payout_ratio),
                     ("dividend_years", "连续分红年数", self.dividend_years),
@@ -493,12 +503,12 @@ impl Fundamentals {
                     ("fcf_coverage", "FCF 覆盖", self.fcf_coverage),
                     (
                         "valuation_percentile",
-                        "估值分位",
+                        "估值(PE)",
                         self.valuation_percentile,
                     ),
                 ] {
                     if value.is_none() {
-                        missing.push(format!("{label}({key})"));
+                        missing.push(label.to_string());
                     }
                 }
             }
