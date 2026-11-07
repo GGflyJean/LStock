@@ -249,3 +249,84 @@
     resizeTimer = setTimeout(renderAllMacroPanes, 150);
   });
 })();
+
+(function () {
+  const FACTOR_INFO = {
+    momentum: { title: '动量', rule: '统计区间内价格涨跌幅，衡量短期趋势强度。' },
+    relative_strength: { title: '相对强度', rule: '相对候选池平均表现的超额涨跌幅，越高说明越强。' },
+    volume_ratio: { title: '量比', rule: '当前成交量 / 近期平均成交量。大于 1 表示放量。' },
+    turnover: { title: '换手率', rule: '成交量 / 流通股本 × 100%，反映交易活跃度。' },
+    fund_flow: { title: '资金流', rule: '主力资金净流入金额，正值表示净流入。' },
+    breakout: { title: '突破距离', rule: '当前价相对近期高点的位置，越接近突破越高。' },
+    volatility: { title: '波动率', rule: '近期价格波动幅度；越低越稳定，打分时按越低越好处理。' },
+    revenue_growth: { title: '营收增速', rule: '营业收入同比增速，来自最新财报。' },
+    eps_growth: { title: 'EPS 增速', rule: '每股收益同比增速；数据源缺失时使用净利润同比增速。' },
+    roe: { title: 'ROE', rule: '净资产收益率，净利润 / 净资产 × 100%。' },
+    roic: { title: 'ROIC', rule: '投入资本回报率，衡量投入资本的盈利效率。金融股通常不披露。' },
+    gross_margin_trend: { title: '毛利率趋势', rule: '毛利率同比变化，正值表示毛利率提升。' },
+    free_cash_flow: { title: '自由现金流', rule: '企业自由现金流（FCFF），越高越好。' },
+    debt_to_equity: { title: '杠杆', rule: '由资产负债率换算的负债/权益比；越低越稳健。' },
+    valuation_percentile: { title: '估值(PE)', rule: '市盈率 PE；越低估值越便宜。亏损股市盈率为负或缺失。' },
+    dividend_yield: { title: '股息率', rule: '最近年度每股现金分红 / 当前股价 × 100%。股价缺失时无法计算。' },
+    payout_ratio: { title: '派息率', rule: '每股现金分红 / 每股收益 × 100%。' },
+    dividend_years: { title: '连续分红年数', rule: '连续实施现金分红的年份数。' },
+    dividend_growth: { title: '股息增速', rule: '最近年度每股分红相对上一年度的增速。' },
+    fcf_coverage: { title: 'FCF 覆盖', rule: '自由现金流 / 年度现金分红总额，衡量分红可持续性。' },
+  };
+
+  let popover = null;
+
+  function hidePopover() {
+    if (popover) popover.style.display = 'none';
+  }
+
+  function showPopover(anchor, key) {
+    const info = FACTOR_INFO[key] || { title: key, rule: '暂无说明。' };
+    if (!popover) {
+      popover = document.createElement('div');
+      popover.className = 'info-popover';
+      document.body.appendChild(popover);
+    }
+    popover.textContent = '';
+    const title = document.createElement('strong');
+    title.textContent = info.title;
+    const rule = document.createElement('div');
+    rule.textContent = info.rule;
+    popover.appendChild(title);
+    popover.appendChild(rule);
+    popover.style.display = 'block';
+
+    const rect = anchor.getBoundingClientRect();
+    const width = 320;
+    const left = Math.min(window.innerWidth - width - 8, Math.max(8, rect.left - 80));
+    const top = Math.min(window.innerHeight - 120, rect.bottom + 8);
+    popover.style.left = left + 'px';
+    popover.style.top = top + 'px';
+  }
+
+  document.addEventListener('click', function (event) {
+    if (!(event.target instanceof Element)) return;
+    const icon = event.target.closest('.info-icon');
+    if (icon) {
+      event.preventDefault();
+      event.stopPropagation();
+      showPopover(icon, icon.dataset.infoKey);
+      return;
+    }
+    if (popover && !event.target.closest('.info-popover')) hidePopover();
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') {
+      hidePopover();
+      return;
+    }
+    if ((event.key === 'Enter' || event.key === ' ') && event.target.classList.contains('info-icon')) {
+      event.preventDefault();
+      showPopover(event.target, event.target.dataset.infoKey);
+    }
+  });
+
+  window.addEventListener('scroll', hidePopover, true);
+  window.addEventListener('resize', hidePopover);
+})();

@@ -560,7 +560,9 @@ pub fn parse_fundamentals(
 
     let stock_data = stock.get("data");
     let price = stock_data.and_then(|data| number(data, "f43"));
-    let total_shares = stock_data.and_then(|data| number(data, "f84"));
+    let total_shares = stock_data
+        .and_then(|data| number(data, "f84"))
+        .or_else(|| number(row, "TOTAL_SHARE"));
     let pe = stock_data
         .and_then(|data| number(data, "f162"))
         .filter(|value| *value > 0.0);
@@ -660,6 +662,9 @@ pub fn parse_fundamentals(
         dividend_years,
         dividend_growth,
         fcf_coverage,
+        price,
+        total_shares,
+        latest_dividend_per_share: latest_total,
     })
 }
 

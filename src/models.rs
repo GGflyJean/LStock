@@ -408,6 +408,7 @@ impl InsufficientItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailValue {
+    pub key: String,
     pub label: String,
     pub value: String,
     #[serde(default)]
@@ -468,6 +469,12 @@ pub struct Fundamentals {
     pub dividend_growth: Option<f64>,
     #[serde(default)]
     pub fcf_coverage: Option<f64>,
+    #[serde(default)]
+    pub price: Option<f64>,
+    #[serde(default)]
+    pub total_shares: Option<f64>,
+    #[serde(default)]
+    pub latest_dividend_per_share: Option<f64>,
 }
 
 impl Fundamentals {

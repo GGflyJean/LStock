@@ -248,6 +248,9 @@ pub fn parse_fundamentals(json: &Value, market: Market, symbol: &str) -> Result<
         dividend_years: None,
         dividend_growth: numeric(summary, "fiveYearAvgDividendYield"),
         fcf_coverage: None,
+        price: None,
+        total_shares: None,
+        latest_dividend_per_share: None,
     };
     if !any_present {
         return Err(anyhow::anyhow!("Yahoo 基本面字段全部缺失"));

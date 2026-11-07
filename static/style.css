@@ -467,3 +467,39 @@ input {
 .detail-factors .factor { font-size: 12px; }
 .detail-factors .factor b { color: var(--text); }
 .detail-factors .missing-factor { color: var(--warn); opacity: 0.85; }
+
+.info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 3px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: 1px;
+}
+
+.info-icon:hover { color: var(--accent); border-color: var(--accent); }
+
+.info-popover {
+  position: fixed;
+  z-index: 100;
+  max-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.info-popover strong { display: block; margin-bottom: 4px; }
+.info-popover .muted { color: var(--muted); }

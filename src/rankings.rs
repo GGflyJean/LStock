@@ -376,11 +376,13 @@ fn fundamental_details(fundamentals: &Fundamentals, specs: &[FactorSpec]) -> Vec
         .iter()
         .map(|spec| match fundamental_value(fundamentals, spec.key) {
             Some(value) => DetailValue {
+                key: spec.key.to_string(),
                 label: spec.label.to_string(),
                 value: format_detail(value),
                 missing: false,
             },
             None => DetailValue {
+                key: spec.key.to_string(),
                 label: spec.label.to_string(),
                 value: "缺失".to_string(),
                 missing: true,
@@ -404,11 +406,13 @@ fn quote_details(quote: &Quote, specs: &[FactorSpec]) -> Vec<DetailValue> {
             };
             match value {
                 Some(value) => DetailValue {
+                    key: spec.key.to_string(),
                     label: spec.label.to_string(),
                     value: format_detail(value),
                     missing: false,
                 },
                 None => DetailValue {
+                    key: spec.key.to_string(),
                     label: spec.label.to_string(),
                     value: "缺失".to_string(),
                     missing: true,
@@ -511,6 +515,9 @@ mod tests {
             dividend_years: Some(10.0),
             dividend_growth: Some(5.0),
             fcf_coverage: Some(2.0),
+            price: Some(100.0),
+            total_shares: Some(1_000_000.0),
+            latest_dividend_per_share: Some(2.0),
         }
     }
 

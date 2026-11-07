@@ -132,7 +132,7 @@
             <td class="score">{{ item.score_text() }}</td>
             <td class="factors">
               {% for factor in item.factors %}
-              <span class="factor" title="原始值 {{ factor.raw_text() }} · z {{ factor.z_text() }} · 权重 {{ factor.weight_text() }}">{{ factor.label }} <b>{{ factor.contribution_text() }}</b></span>
+              <span class="factor" title="原始值 {{ factor.raw_text() }} · z {{ factor.z_text() }} · 权重 {{ factor.weight_text() }}">{{ factor.label }}<span class="info-icon" role="button" tabindex="0" data-info-key="{{ factor.key }}">i</span> <b>{{ factor.contribution_text() }}</b></span>
               {% endfor %}
             </td>
           </tr>
@@ -157,7 +157,7 @@
               <span class="muted">未获取到财务/行情数据</span>
               {% else %}
               {% for factor in item.factors %}
-              <span class="factor{% if factor.missing %} missing-factor{% endif %}">{{ factor.label }} <b>{{ factor.value }}</b></span>
+              <span class="factor{% if factor.missing %} missing-factor{% endif %}">{{ factor.label }}<span class="info-icon" role="button" tabindex="0" data-info-key="{{ factor.key }}">i</span> <b>{{ factor.value }}</b></span>
               {% endfor %}
               {% endif %}
             </td>

@@ -247,6 +247,8 @@ async fn ranking_page_renders_items_and_weights_form() {
     assert!(body.contains("88.0"));
     assert!(body.contains("调整因子权重"));
     assert!(body.contains("/weights/short"));
+    assert!(body.contains("info-icon"));
+    assert!(body.contains("data-info-key=\"momentum\""));
 }
 
 #[tokio::test]
@@ -495,11 +497,13 @@ async fn ranking_insufficient_list_is_rendered() {
             missing: vec!["ROIC".to_string()],
             factors: vec![
                 l_stock::models::DetailValue {
+                    key: "revenue_growth".to_string(),
                     label: "营收增速".to_string(),
                     value: "2.10".to_string(),
                     missing: false,
                 },
                 l_stock::models::DetailValue {
+                    key: "roic".to_string(),
                     label: "ROIC".to_string(),
                     value: "缺失".to_string(),
                     missing: true,
@@ -530,6 +534,8 @@ async fn ranking_insufficient_list_is_rendered() {
     assert!(body.contains("营收增速"));
     assert!(body.contains("2.10"));
     assert!(body.contains("缺失"));
+    assert!(body.contains("data-info-key=\"roic\""));
+    assert!(body.contains("data-info-key=\"revenue_growth\""));
 }
 
 #[tokio::test]

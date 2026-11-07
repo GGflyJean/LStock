@@ -669,7 +669,33 @@ impl Providers {
         tracing::debug!(market = market.code(), symbol, "抓取基本面");
         if market == Market::Cn {
             match self.eastmoney.fundamentals(market, symbol).await {
-                Ok(value) => {
+                Ok(mut value) => {
+                    if value.dividend_yield.is_none() || value.fcf_coverage.is_none() {
+                        if value.price.is_none() {
+                            if let Ok(payload) =
+                                self.quotes(Market::Cn, &[symbol.to_string()]).await
+                            {
+                                value.price = payload.quotes.first().map(|quote| quote.price);
+                            }
+                        }
+                        if let Some(price) = value.price {
+                            if let Some(dps) = value.latest_dividend_per_share {
+                                if value.dividend_yield.is_none() {
+                                    value.dividend_yield = Some(dps / price * 100.0);
+                                }
+                                if value.fcf_coverage.is_none() {
+                                    if let (Some(fcf), Some(shares)) =
+                                        (value.free_cash_flow, value.total_shares)
+                                    {
+                                        if dps > 0.0 && shares > 0.0 {
+                                            value.fcf_coverage = Some(fcf / (dps * shares));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    value.data_complete = value.price.is_some() && value.total_shares.is_some();
                     tracing::info!(
                         market = market.code(),
                         symbol,
