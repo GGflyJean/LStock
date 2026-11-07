@@ -138,6 +138,7 @@ struct MacroChartView {
     note: String,
     unit: String,
     series_json: String,
+    views_json: String,
 }
 
 #[derive(Debug, Clone)]
@@ -503,6 +504,8 @@ fn build_pane(state: &AppState, market: Market, tab: Tab, board: Board) -> PaneV
                         unit: item.unit,
                         series_json: serde_json::to_string(&item.series)
                             .unwrap_or_else(|_| "[]".to_string()),
+                        views_json: serde_json::to_string(&item.views)
+                            .unwrap_or_else(|_| "{}".to_string()),
                     })
                     .collect();
                 pane.source_note = payload.source_note;

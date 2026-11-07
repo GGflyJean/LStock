@@ -137,20 +137,72 @@ impl EastmoneyProvider {
             self.report_series("RPT_ECONOMY_CURRENCY_SUPPLY")
         );
         let mut items = Vec::new();
-        if let Some(item) = macro_series("GDP 同比", "%", "quarter", gdp, "SUM_SAME") {
-            items.push(item);
+
+        if let Ok(report) = gdp {
+            let yoy = report_series_values(&report, "SUM_SAME");
+            let growth = yoy.clone();
+            if let Some(item) = build_macro_item(
+                "GDP 同比",
+                "%",
+                "quarter",
+                &report,
+                yoy,
+                growth,
+                Vec::new(),
+                false,
+            ) {
+                items.push(item);
+            }
         }
-        if let Some(item) = macro_series("CPI 同比", "%", "month", cpi, "NATIONAL_SAME") {
-            items.push(item);
+        if let Ok(report) = cpi {
+            let yoy = report_series_values(&report, "NATIONAL_SAME");
+            let mom = report_series_values(&report, "NATIONAL_SEQUENTIAL");
+            let growth = accumulate_series(report_series_values(&report, "NATIONAL_ACCUMULATE"));
+            if let Some(item) =
+                build_macro_item("CPI 同比", "%", "month", &report, yoy, growth, mom, false)
+            {
+                items.push(item);
+            }
         }
-        if let Some(item) = macro_series("PPI 同比", "%", "month", ppi, "BASE_SAME") {
-            items.push(item);
+        if let Ok(report) = ppi {
+            let yoy = report_series_values(&report, "BASE_SAME");
+            let growth = accumulate_series(report_series_values(&report, "BASE_ACCUMULATE"));
+            let level = report_series_values(&report, "BASE");
+            let mom = change_series(&level, 1, true);
+            if let Some(item) =
+                build_macro_item("PPI 同比", "%", "month", &report, yoy, growth, mom, false)
+            {
+                items.push(item);
+            }
         }
-        if let Some(item) = macro_series("制造业 PMI", "", "month", pmi, "MAKE_INDEX") {
-            items.push(item);
+        if let Ok(report) = pmi {
+            let level = report_series_values(&report, "MAKE_INDEX");
+            let yoy = change_series(&level, 12, false);
+            let mom = change_series(&level, 1, false);
+            if let Some(item) = build_macro_item(
+                "制造业 PMI",
+                "",
+                "month",
+                &report,
+                level.clone(),
+                level,
+                mom,
+                true,
+            ) {
+                let mut item = item;
+                item.views.yoy = yoy;
+                items.push(item);
+            }
         }
-        if let Some(item) = macro_series("M2 同比", "%", "month", m2, "CURRENCY_SAME") {
-            items.push(item);
+        if let Ok(report) = m2 {
+            let yoy = report_series_values(&report, "CURRENCY_SAME");
+            let mom = report_series_values(&report, "CURRENCY_SEQUENTIAL");
+            let growth = yoy.clone();
+            if let Some(item) =
+                build_macro_item("M2 同比", "%", "month", &report, yoy, growth, mom, false)
+            {
+                items.push(item);
+            }
         }
         if items.is_empty() {
             return Err(anyhow::anyhow!("东方财富宏观数据全部不可用"));
@@ -264,33 +316,82 @@ fn rows(json: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| anyhow::anyhow!("响应缺少 data.diff"))
 }
 
-fn macro_series(
+fn report_series_values(report: &Value, key: &str) -> Vec<MacroPoint> {
+    let mut series: Vec<MacroPoint> = report
+        .get("result")
+        .and_then(|result| result.get("data"))
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let date = row.get("REPORT_DATE").and_then(Value::as_str)?.to_string();
+                    let value = number(row, key)?;
+                    Some(MacroPoint { date, value })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    series.sort_by(|a, b| a.date.cmp(&b.date));
+    series
+}
+
+fn accumulate_series(series: Vec<MacroPoint>) -> Vec<MacroPoint> {
+    series
+        .into_iter()
+        .map(|mut point| {
+            if point.value > 50.0 {
+                point.value -= 100.0;
+            }
+            point
+        })
+        .collect()
+}
+
+fn change_series(series: &[MacroPoint], lag: usize, percent: bool) -> Vec<MacroPoint> {
+    if series.len() <= lag {
+        return Vec::new();
+    }
+    series
+        .iter()
+        .enumerate()
+        .skip(lag)
+        .map(|(index, current)| {
+            let previous = &series[index - lag];
+            let value = if percent && previous.value.abs() > f64::EPSILON {
+                (current.value / previous.value - 1.0) * 100.0
+            } else {
+                current.value - previous.value
+            };
+            MacroPoint {
+                date: current.date.clone(),
+                value,
+            }
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_macro_item(
     label: &str,
     unit: &str,
     frequency: &str,
-    report: Result<Value>,
-    key: &str,
+    report: &Value,
+    series: Vec<MacroPoint>,
+    growth: Vec<MacroPoint>,
+    mom: Vec<MacroPoint>,
+    value_from_growth: bool,
 ) -> Option<MacroItem> {
-    let report = report.ok()?;
-    let rows = report
+    let yoy = series;
+    let latest = if value_from_growth {
+        growth.last().or_else(|| yoy.last())
+    } else {
+        yoy.last().or_else(|| growth.last())
+    }?;
+    let note = report
         .get("result")
         .and_then(|result| result.get("data"))
-        .and_then(Value::as_array)?;
-    let mut series: Vec<MacroPoint> = rows
-        .iter()
-        .filter_map(|row| {
-            let date = row.get("REPORT_DATE").and_then(Value::as_str)?.to_string();
-            let value = number(row, key)?;
-            Some(MacroPoint { date, value })
-        })
-        .collect();
-    if series.is_empty() {
-        return None;
-    }
-    series.sort_by(|a, b| a.date.cmp(&b.date));
-    let latest = series.last()?;
-    let note = rows
-        .first()
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first())
         .and_then(|row| row.get("TIME"))
         .and_then(Value::as_str)
         .unwrap_or(&latest.date)
@@ -306,7 +407,8 @@ fn macro_series(
         note,
         unit: unit.to_string(),
         frequency: frequency.to_string(),
-        series,
+        series: yoy.clone(),
+        views: crate::models::MacroViews { growth, yoy, mom },
     })
 }
 
@@ -773,7 +875,18 @@ mod tests {
             ]}}"#,
         )
         .unwrap();
-        let item = macro_series("CPI 同比", "%", "month", Ok(report), "NATIONAL_SAME").unwrap();
+        let yoy = report_series_values(&report, "NATIONAL_SAME");
+        let item = build_macro_item(
+            "CPI 同比",
+            "%",
+            "month",
+            &report,
+            yoy.clone(),
+            yoy,
+            Vec::new(),
+            false,
+        )
+        .unwrap();
         assert_eq!(item.series.len(), 3);
         assert_eq!(item.series[0].date, "2026-07-01 00:00:00");
         assert_eq!(item.series[2].date, "2026-09-01 00:00:00");

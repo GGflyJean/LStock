@@ -231,13 +231,29 @@
       {% if !pane.macro_charts.is_empty() %}
       <div class="macro-pane">
         <div class="macro-toolbar">
-          <span class="muted">时间粒度</span>
-          <select class="macro-granularity">
-            <option value="month">月</option>
-            <option value="quarter">季度</option>
-            <option value="half">半年</option>
-            <option value="year" selected>年</option>
-          </select>
+          <div class="macro-views">
+            <button type="button" class="macro-view-button active" data-view="growth" title="累计同比；PMI 为指数点位">增速</button>
+            <button type="button" class="macro-view-button" data-view="yoy" title="单期同比；PMI 为较去年同月变化">同比</button>
+            <button type="button" class="macro-view-button" data-view="mom" title="较上一期变化">环比</button>
+          </div>
+          <label class="muted">范围
+            <select class="macro-range">
+              <option value="1y">近 1 年</option>
+              <option value="3y">近 3 年</option>
+              <option value="5y">近 5 年</option>
+              <option value="10y">近 10 年</option>
+              <option value="20y" selected>近 20 年</option>
+              <option value="all">全部</option>
+            </select>
+          </label>
+          <label class="muted">粒度
+            <select class="macro-granularity">
+              <option value="month">月</option>
+              <option value="quarter">季度</option>
+              <option value="half">半年</option>
+              <option value="year" selected>年</option>
+            </select>
+          </label>
         </div>
         {% for chart in pane.macro_charts %}
         <section class="macro-chart">
@@ -246,9 +262,10 @@
             <span class="macro-value">{{ chart.value }}</span>
             <span class="macro-note">{{ chart.note }}</span>
           </div>
-          <canvas class="macro-canvas" height="180" data-unit="{{ chart.unit }}" data-series="{{ chart.series_json }}"></canvas>
+          <canvas class="macro-canvas" height="180" data-unit="{{ chart.unit }}" data-series="{{ chart.series_json }}" data-views="{{ chart.views_json }}"></canvas>
         </section>
         {% endfor %}
+        <div class="macro-tooltip" hidden></div>
       </div>
       {% else %}
       <div class="placeholder">{{ pane.placeholder }}</div>

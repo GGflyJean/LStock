@@ -598,6 +598,20 @@ async fn new_tabs_render_snapshots() {
                     value: 0.9,
                 },
             ],
+            views: l_stock::models::MacroViews {
+                growth: vec![l_stock::models::MacroPoint {
+                    date: "2026-09-01".to_string(),
+                    value: 0.9,
+                }],
+                yoy: vec![l_stock::models::MacroPoint {
+                    date: "2026-09-01".to_string(),
+                    value: 0.9,
+                }],
+                mom: vec![l_stock::models::MacroPoint {
+                    date: "2026-09-01".to_string(),
+                    value: 0.2,
+                }],
+            },
         }],
         source_note: "来源：测试".to_string(),
         as_of_utc: now,
@@ -629,8 +643,11 @@ async fn new_tabs_render_snapshots() {
         assert!(body.contains(expected), "tab={tab} missing {expected}");
         assert!(!body.contains("暂未开放"), "tab={tab} still pending");
         if tab == "macro" {
-            assert!(body.contains("时间粒度"));
+            assert!(body.contains("macro-granularity"));
+            assert!(body.contains("macro-range"));
+            assert!(body.contains("macro-view-button"));
             assert!(body.contains("data-series"));
+            assert!(body.contains("data-views"));
         }
     }
 }

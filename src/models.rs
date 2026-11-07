@@ -624,6 +624,16 @@ pub struct MacroPoint {
     pub value: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MacroViews {
+    #[serde(default)]
+    pub growth: Vec<MacroPoint>,
+    #[serde(default)]
+    pub yoy: Vec<MacroPoint>,
+    #[serde(default)]
+    pub mom: Vec<MacroPoint>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MacroItem {
     pub label: String,
@@ -635,6 +645,8 @@ pub struct MacroItem {
     pub frequency: String,
     #[serde(default)]
     pub series: Vec<MacroPoint>,
+    #[serde(default)]
+    pub views: MacroViews,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

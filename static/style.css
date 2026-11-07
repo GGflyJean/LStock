@@ -425,7 +425,41 @@ input {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.macro-views {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.macro-view-button {
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--line);
+  color: var(--muted);
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.macro-view-button:last-child { border-right: 0; }
+.macro-view-button.active { background: var(--accent); color: #fff; }
+
+.macro-tooltip {
+  position: fixed;
+  z-index: 110;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  padding: 6px 9px;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .macro-toolbar select {

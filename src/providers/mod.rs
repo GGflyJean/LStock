@@ -620,6 +620,7 @@ impl Providers {
                             unit: String::new(),
                             frequency: "day".to_string(),
                             series: Vec::new(),
+                            views: Default::default(),
                         });
                     }
                 }
@@ -636,6 +637,7 @@ impl Providers {
                             unit: String::new(),
                             frequency: "day".to_string(),
                             series: Vec::new(),
+                            views: Default::default(),
                         });
                     }
                 }
@@ -646,6 +648,7 @@ impl Providers {
                     unit: "%".to_string(),
                     frequency: "day".to_string(),
                     series: Vec::new(),
+                    views: Default::default(),
                 });
                 items.push(MacroItem {
                     label: "美元指数".to_string(),
@@ -654,6 +657,7 @@ impl Providers {
                     unit: String::new(),
                     frequency: "day".to_string(),
                     series: Vec::new(),
+                    views: Default::default(),
                 });
                 Ok(MacroPayload {
                     items,
